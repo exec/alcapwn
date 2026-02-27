@@ -370,8 +370,6 @@ var reconSections = []string{
 }
 
 var (
-	// reANSI matches ANSI CSI sequences including DEC private mode codes (\x1b[?...).
-	reANSI = regexp.MustCompile(`\x1b\[[?0-9;]*[a-zA-Z]`)
 	// reSectionHeader matches actual section header lines, e.g. "[SECTION 3] SUID/SGID BINARIES".
 	// Anchored to ^ so it does NOT match inside echoed script lines like:
 	//   echo "[SECTION 7] ENVIRONMENT & TOOLS"
@@ -379,8 +377,12 @@ var (
 )
 
 // stripANSI removes ANSI escape sequences from text.
+// Applies OSC stripping (reStripOSC) before CSI stripping (reStripCSI) since
+// OSC sequences can embed CSI-like substrings. Both regexes are defined in
+// pty_upgrader.go and used consistently with StripPrompts.
 func stripANSI(s string) string {
-	return reANSI.ReplaceAllString(s, "")
+	s = reStripOSC.ReplaceAllString(s, "")
+	return reStripCSI.ReplaceAllString(s, "")
 }
 
 const reconBarWidth = 10 // width of the mini block bar shown in the task detail
@@ -433,13 +435,14 @@ type PTY interface {
 	write(data string) error
 }
 
-// executeRecon executes the reconnaissance script and returns cleaned output.
+// executeRecon executes the reconnaissance script and returns cleaned output
+// plus the path of the saved raw file (empty string if not saved).
 // disp/reconIdx are used to update the Reconnaissance task in the status display.
 // host is used for the raw output filename.
-func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, reconIdx int) (string, error) {
+func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, reconIdx int) (string, string, error) {
 	if err := u.write(reconScript + "\n"); err != nil {
 		disp.set(reconIdx, taskFailed, "write error")
-		return "", err
+		return "", "", err
 	}
 
 	total := len(reconSections)
@@ -457,7 +460,7 @@ func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, r
 
 	if err != nil {
 		disp.set(reconIdx, taskFailed, reconDetail(current, total, "timed out"))
-		return "", err
+		return "", "", err
 	}
 	disp.set(reconIdx, taskDone, "")
 
@@ -467,18 +470,19 @@ func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, r
 	raw = stripPS2Lines(raw)
 	raw = u.StripPrompts(raw)
 
+	rawPath := ""
 	if findingsDir != "" {
-		saveRawOutput(raw, findingsDir, host)
+		rawPath = saveRawOutput(raw, findingsDir, host)
 	}
 
-	return raw, nil
+	return raw, rawPath, nil
 }
 
-func saveRawOutput(output string, findingsDir string, host string) {
+func saveRawOutput(output string, findingsDir string, host string) string {
 	// Create findings directory if needed
 	if err := os.MkdirAll(findingsDir, 0755); err != nil {
 		fmt.Printf("[!] Could not create findings directory: %v\n", err)
-		return
+		return ""
 	}
 
 	// Sanitize host for use in filename: strip port, replace colons (IPv6) with underscores.
@@ -493,14 +497,14 @@ func saveRawOutput(output string, findingsDir string, host string) {
 	// Generate filename with timestamp
 	timestamp := time.Now().Format("20060102_150405")
 	filename := fmt.Sprintf("raw_%s_%s.txt", host, timestamp)
-	filepath := filepath.Join(findingsDir, filename)
+	outpath := filepath.Join(findingsDir, filename)
 
-	if err := os.WriteFile(filepath, []byte(output), 0644); err != nil {
+	if err := os.WriteFile(outpath, []byte(output), 0644); err != nil {
 		fmt.Printf("[!] Could not save raw output: %v\n", err)
-		return
+		return ""
 	}
 
-	fmt.Printf("[*] Raw output saved to: %s\n", filepath)
+	return outpath
 }
 
 // extractSection extracts a specific section from the recon output
