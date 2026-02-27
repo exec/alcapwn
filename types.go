@@ -51,6 +51,7 @@ type Findings struct {
 	DockerSocketAccessible bool            `json:"docker_socket_accessible"`
 	ServiceVersions       ServiceVersions  `json:"service_versions"`
 	EnvSecrets            []string         `json:"env_secrets"`
+	SudoRequiresPassword  bool             `json:"sudo_requires_password"`
 	SSHKeyFound           *string          `json:"ssh_key_found"`
 	AWSCredentialsFound   bool             `json:"aws_credentials_found"`
 	MySQLConfigFound      bool             `json:"mysql_config_found"`

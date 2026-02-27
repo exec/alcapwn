@@ -98,7 +98,9 @@ func printSummary(f *Findings, matches []MatchResult) {
 	fmt.Println("\n[OTHER FINDINGS]")
 
 	// Sudo nopasswd
-	if len(f.SudoNopasswd) > 0 {
+	if f.SudoRequiresPassword {
+		fmt.Println("\n [INFO] sudo requires password — skipped")
+	} else if len(f.SudoNopasswd) > 0 {
 		fmt.Printf("\n SUDO NOPASSWD: %d entries\n", len(f.SudoNopasswd))
 		for i, entry := range f.SudoNopasswd {
 			if i >= 5 {
