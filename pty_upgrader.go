@@ -54,10 +54,9 @@ func (p *PTYUpgrader) readUntilPrompt(timeout time.Duration) (string, error) {
 	defer p.conn.SetReadDeadline(time.Time{})
 
 	var data strings.Builder
-	promptPattern := regexp.MustCompile(`[$#]\s*$`)
 	buf := make([]byte, 4096)
 
-	for !promptPattern.MatchString(data.String()) {
+	for !rePromptPattern.MatchString(data.String()) {
 		n, err := p.reader.Read(buf)
 		if n > 0 {
 			data.Write(buf[:n])
@@ -202,6 +201,14 @@ var reStripOSC = regexp.MustCompile(`\x1b\][^\x07]*(?:\x07|\x1b\\)`)
 // Used by both StripPrompts and stripANSI (recon.go) for consistent stripping.
 var reStripCSI = regexp.MustCompile(`\x1b\[[?0-9;]*[a-zA-Z]`)
 
+// rePromptBare matches a line that is nothing but a prompt character ($ or #) with
+// optional surrounding whitespace — used by StripPrompts to drop bare prompt lines.
+var rePromptBare = regexp.MustCompile(`^[$#]\s*$`)
+
+// rePromptTrail matches a line ending in a prompt character followed by exactly one
+// whitespace — catches "$ " and "# " style prompts at the end of cleaned lines.
+var rePromptTrail = regexp.MustCompile(`[$#]\s$`)
+
 // StripPrompts removes shell prompt lines from output.
 func (p *PTYUpgrader) StripPrompts(output string) string {
 	lines := []string{}
@@ -214,10 +221,10 @@ func (p *PTYUpgrader) StripPrompts(output string) string {
 		if strings.Contains(clean, "@") && (strings.Contains(clean, "$") || strings.Contains(clean, "#")) {
 			continue
 		}
-		if regexp.MustCompile(`^[$#]\s*$`).MatchString(clean) {
+		if rePromptBare.MatchString(clean) {
 			continue
 		}
-		if regexp.MustCompile(`[$#]\s$`).MatchString(clean) {
+		if rePromptTrail.MatchString(clean) {
 			continue
 		}
 		lines = append(lines, line)
@@ -227,12 +234,11 @@ func (p *PTYUpgrader) StripPrompts(output string) string {
 
 // hasRealPrompt checks if output contains a real shell prompt.
 func (p *PTYUpgrader) hasRealPrompt(output string) bool {
-	promptPattern := regexp.MustCompile(`[$#]\s*$`)
-	if !promptPattern.MatchString(output) {
+	if !rePromptPattern.MatchString(output) {
 		return false
 	}
 
-	promptMatch := promptPattern.FindStringIndex(output)
+	promptMatch := rePromptPattern.FindStringIndex(output)
 	if promptMatch == nil {
 		return false
 	}
@@ -300,14 +306,18 @@ func (p *PTYUpgrader) Interact() error {
 	remoteDone := make(chan struct{})
 	stdinDone := make(chan struct{})
 
-	// Remote -> stdout
+	// Remote -> stdout.
+	// Strip OSC sequences (clipboard writes via OSC 52, title changes via OSC 0/1/2,
+	// etc.) before forwarding to the local terminal. CSI sequences (colours, cursor
+	// movement) pass through unchanged — TUI apps need them.
 	go func() {
 		defer close(remoteDone)
 		buf := make([]byte, 4096)
 		for {
 			n, err := p.conn.Read(buf)
 			if n > 0 {
-				os.Stdout.Write(buf[:n])
+				out := reStripOSC.ReplaceAll(buf[:n], nil)
+				os.Stdout.Write(out)
 				os.Stdout.Sync()
 			}
 			if err != nil {

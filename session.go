@@ -36,11 +36,11 @@ func handleSession(conn net.Conn, verbosity int) {
 	}
 
 	findingsDir := "findings"
-	if err := os.MkdirAll(findingsDir, 0755); err != nil {
+	if err := os.MkdirAll(findingsDir, 0700); err != nil {
 		fmt.Printf("[!] Could not create findings directory: %v\n", err)
 	}
 
-	raw, rawPath, err := executeRecon(u, findingsDir, addr.String(), disp, reconIdx)
+	rawPath, sections, err := executeRecon(u, findingsDir, addr.String(), disp, reconIdx)
 	if err != nil {
 		disp.stop()
 		fmt.Printf("[!] Recon failed: %v\n", err)
@@ -50,7 +50,7 @@ func handleSession(conn net.Conn, verbosity int) {
 	// Drain the prompt left in the bufio buffer after the recon sentinel.
 	u.readUntilPrompt(1 * time.Second)
 
-	findings := parseReconOutput(raw)
+	findings := (&ReconParser{}).Parse(sections)
 	matches := matchFindings(findings)
 
 	// Stop the spinner and wipe the task list before printing the report.
@@ -78,7 +78,7 @@ func handleSession(conn net.Conn, verbosity int) {
 
 func saveFindings(f *Findings, addr net.Addr) string {
 	findingsDir := "findings"
-	if err := os.MkdirAll(findingsDir, 0755); err != nil {
+	if err := os.MkdirAll(findingsDir, 0700); err != nil {
 		fmt.Printf("[!] Could not create findings directory: %v\n", err)
 		return ""
 	}
@@ -101,7 +101,7 @@ func saveFindings(f *Findings, addr net.Addr) string {
 		return ""
 	}
 
-	if err := os.WriteFile(outpath, data, 0644); err != nil {
+	if err := os.WriteFile(outpath, data, 0600); err != nil {
 		fmt.Printf("[!] Could not save findings: %v\n", err)
 		return ""
 	}

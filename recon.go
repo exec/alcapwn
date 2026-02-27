@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,7 +10,7 @@ import (
 	"time"
 )
 
-const reconScript = `#!/bin/bash
+const reconScriptTemplate = `#!/bin/bash
 # ============================================================
 # AUTOMATED RECONNAISSANCE SCRIPT
 # ============================================================
@@ -42,7 +43,7 @@ _PWD_PID=$!
 # ------------------------------------------------------------
 # SECTION 1: IDENTITY
 # ------------------------------------------------------------
-echo "[SECTION 1] IDENTITY"
+echo "[SECTION 1:{{NONCE}}] IDENTITY"
 echo "------------------------------------------------------------"
 echo "Hostname: $(hostname)"
 echo "Current user: $(whoami)"
@@ -100,7 +101,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 2: SUDO ACCESS
 # ------------------------------------------------------------
-echo "[SECTION 2] SUDO ACCESS"
+echo "[SECTION 2:{{NONCE}}] SUDO ACCESS"
 echo "------------------------------------------------------------"
 echo "Sudoers file:"
 if [ -f /etc/sudoers ]; then cat /etc/sudoers 2>/dev/null; fi
@@ -112,7 +113,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 3: SUID/SGID BINARIES
 # ------------------------------------------------------------
-echo "[SECTION 3] SUID/SGID BINARIES"
+echo "[SECTION 3:{{NONCE}}] SUID/SGID BINARIES"
 echo "------------------------------------------------------------"
 echo "SUID binaries:"
 wait $_SUID_PID 2>/dev/null; cat "$_T/suid" 2>/dev/null
@@ -124,7 +125,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 4: CAPABILITIES
 # ------------------------------------------------------------
-echo "[SECTION 4] CAPABILITIES"
+echo "[SECTION 4:{{NONCE}}] CAPABILITIES"
 echo "------------------------------------------------------------"
 echo "Files with capabilities:"
 getcap /usr/bin/* /usr/sbin/* /usr/local/bin/* /usr/local/sbin/* /bin/* /sbin/* 2>/dev/null || echo "getcap not available"
@@ -133,7 +134,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 5: CRON JOBS
 # ------------------------------------------------------------
-echo "[SECTION 5] CRON JOBS"
+echo "[SECTION 5:{{NONCE}}] CRON JOBS"
 echo "------------------------------------------------------------"
 echo "System crontab:"
 cat /etc/crontab 2>/dev/null || echo "Cannot read /etc/crontab"
@@ -151,7 +152,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 6: WRITABLE PATHS
 # ------------------------------------------------------------
-echo "[SECTION 6] WRITABLE PATHS"
+echo "[SECTION 6:{{NONCE}}] WRITABLE PATHS"
 echo "------------------------------------------------------------"
 echo "Paths writable by current user:"
 for dir in /bin /sbin /usr/bin /usr/sbin /usr/local/bin /usr/local/sbin /tmp /var/tmp; do
@@ -165,7 +166,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 7: ENVIRONMENT & TOOLS
 # ------------------------------------------------------------
-echo "[SECTION 7] ENVIRONMENT & TOOLS"
+echo "[SECTION 7:{{NONCE}}] ENVIRONMENT & TOOLS"
 echo "------------------------------------------------------------"
 echo "Environment variables:"
 env 2>/dev/null | head -30
@@ -180,7 +181,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 8: INTERESTING FILES
 # ------------------------------------------------------------
-echo "[SECTION 8] INTERESTING FILES"
+echo "[SECTION 8:{{NONCE}}] INTERESTING FILES"
 echo "------------------------------------------------------------"
 echo "SSH keys:"
 wait $_SSH_PID 2>/dev/null; cat "$_T/ssh" 2>/dev/null
@@ -205,7 +206,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 9: RUNNING SERVICES
 # ------------------------------------------------------------
-echo "[SECTION 9] RUNNING SERVICES"
+echo "[SECTION 9:{{NONCE}}] RUNNING SERVICES"
 echo "------------------------------------------------------------"
 echo "Listening ports:"
 ss -tuln 2>/dev/null || netstat -tuln 2>/dev/null || echo "Cannot get listening ports"
@@ -220,7 +221,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 10: SERVICE VERSION DETECTION
 # ------------------------------------------------------------
-echo "[SECTION 10] SERVICE VERSION DETECTION"
+echo "[SECTION 10:{{NONCE}}] SERVICE VERSION DETECTION"
 echo "------------------------------------------------------------"
 echo "Checking for common services with versions:"
 
@@ -259,7 +260,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 11: DOCKER SOCKET DETECTION
 # ------------------------------------------------------------
-echo "[SECTION 11] DOCKER SOCKET DETECTION"
+echo "[SECTION 11:{{NONCE}}] DOCKER SOCKET DETECTION"
 echo "------------------------------------------------------------"
 echo "Docker socket locations:"
 ls -la /var/run/docker.sock 2>/dev/null || echo "/var/run/docker.sock not found"
@@ -275,7 +276,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 12: KERNEL VERSION
 # ------------------------------------------------------------
-echo "[SECTION 12] KERNEL VERSION"
+echo "[SECTION 12:{{NONCE}}] KERNEL VERSION"
 echo "------------------------------------------------------------"
 echo "Kernel version: $(uname -r)"
 echo "Kernel release: $(uname -v)"
@@ -297,7 +298,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 13: CONTAINER/VM DETECTION
 # ------------------------------------------------------------
-echo "[SECTION 13] CONTAINER/VM DETECTION"
+echo "[SECTION 13:{{NONCE}}] CONTAINER/VM DETECTION"
 echo "------------------------------------------------------------"
 echo "Checking for containerization:"
 
@@ -337,22 +338,6 @@ echo "ALCAPWN_RECON_COMPLETE_7f3x9q"`
 
 const sentinel = "ALCAPWN_RECON_COMPLETE_7f3x9q"
 
-var sectionHeaders = map[string]string{
-	"IDENTITY":                        "[SECTION 1] IDENTITY",
-	"SUDO ACCESS":                     "[SECTION 2] SUDO ACCESS",
-	"SUID/SGID BINARIES":              "[SECTION 3] SUID/SGID BINARIES",
-	"CAPABILITIES":                    "[SECTION 4] CAPABILITIES",
-	"CRON JOBS":                       "[SECTION 5] CRON JOBS",
-	"WRITABLE PATHS":                  "[SECTION 6] WRITABLE PATHS",
-	"ENVIRONMENT & TOOLS":             "[SECTION 7] ENVIRONMENT & TOOLS",
-	"INTERESTING FILES":               "[SECTION 8] INTERESTING FILES",
-	"RUNNING SERVICES":                "[SECTION 9] RUNNING SERVICES",
-	"SERVICE VERSION DETECTION":       "[SECTION 10] SERVICE VERSION DETECTION",
-	"DOCKER SOCKET DETECTION":         "[SECTION 11] DOCKER SOCKET DETECTION",
-	"KERNEL VERSION":                  "[SECTION 12] KERNEL VERSION",
-	"CONTAINER/VM DETECTION":          "[SECTION 13] CONTAINER/VM DETECTION",
-}
-
 var reconSections = []string{
 	"IDENTITY",
 	"SUDO ACCESS",
@@ -369,12 +354,29 @@ var reconSections = []string{
 	"CONTAINER/VM DETECTION",
 }
 
-var (
-	// reSectionHeader matches actual section header lines, e.g. "[SECTION 3] SUID/SGID BINARIES".
-	// Anchored to ^ so it does NOT match inside echoed script lines like:
-	//   echo "[SECTION 7] ENVIRONMENT & TOOLS"
-	reSectionHeader = regexp.MustCompile(`^\[SECTION \d+\]\s+(.+)`)
-)
+// makeReconNonce returns a random 8-hex-char nonce unique to this recon session.
+// The nonce is embedded in every section header echo in the script so that
+// injected fake headers (via env vars, file content, etc.) cannot match the
+// per-session section header regex — the attacker cannot know the nonce in advance.
+func makeReconNonce() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "alcapwn0" // fallback: weaker but functional
+	}
+	return fmt.Sprintf("%x", b)
+}
+
+// buildReconScript substitutes the per-session nonce into the script template.
+func buildReconScript(nonce string) string {
+	return strings.ReplaceAll(reconScriptTemplate, "{{NONCE}}", nonce)
+}
+
+// buildSectionRe returns a regex that matches real section header lines for this session.
+// Group 1 = section number, group 2 = section name.
+// The nonce is required in the header so fake headers injected by the target cannot match.
+func buildSectionRe(nonce string) *regexp.Regexp {
+	return regexp.MustCompile(`^\[SECTION (\d+):` + regexp.QuoteMeta(nonce) + `\]\s+(.+)`)
+}
 
 // stripANSI removes ANSI escape sequences from text.
 // Applies OSC stripping (reStripOSC) before CSI stripping (reStripCSI) since
@@ -435,14 +437,18 @@ type PTY interface {
 	write(data string) error
 }
 
-// executeRecon executes the reconnaissance script and returns cleaned output
-// plus the path of the saved raw file (empty string if not saved).
-// disp/reconIdx are used to update the Reconnaissance task in the status display.
-// host is used for the raw output filename.
-func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, reconIdx int) (string, string, error) {
-	if err := u.write(reconScript + "\n"); err != nil {
+// executeRecon executes the reconnaissance script and returns the path of the saved
+// raw file (empty if not saved) and a map of section name → section text.
+// A per-session nonce is embedded in every section header echo in the script so that
+// fake headers injected by a hostile target (via env vars, file content, etc.) cannot
+// be mistaken for real section boundaries.
+func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, reconIdx int) (string, map[string]string, error) {
+	nonce := makeReconNonce()
+	sectionRe := buildSectionRe(nonce)
+
+	if err := u.write(buildReconScript(nonce) + "\n"); err != nil {
 		disp.set(reconIdx, taskFailed, "write error")
-		return "", "", err
+		return "", nil, err
 	}
 
 	total := len(reconSections)
@@ -452,15 +458,15 @@ func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, r
 	raw, err := u.readUntilSentinelProgress(sentinel, 5*time.Second, func(line string) {
 		// Clean just enough for header detection; raw accumulation is unaffected.
 		clean := strings.TrimRight(stripANSI(strings.ReplaceAll(line, "\r", "")), "\n\r ")
-		if m := reSectionHeader.FindStringSubmatch(clean); m != nil {
+		if m := sectionRe.FindStringSubmatch(clean); m != nil {
 			current++
-			disp.set(reconIdx, taskRunning, reconDetail(current, total, strings.TrimSpace(m[1])))
+			disp.set(reconIdx, taskRunning, reconDetail(current, total, strings.TrimSpace(m[2])))
 		}
 	})
 
 	if err != nil {
 		disp.set(reconIdx, taskFailed, reconDetail(current, total, "timed out"))
-		return "", "", err
+		return "", nil, err
 	}
 	disp.set(reconIdx, taskDone, "")
 
@@ -475,12 +481,12 @@ func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, r
 		rawPath = saveRawOutput(raw, findingsDir, host)
 	}
 
-	return raw, rawPath, nil
+	return rawPath, extractAllSections(raw, sectionRe), nil
 }
 
 func saveRawOutput(output string, findingsDir string, host string) string {
 	// Create findings directory if needed
-	if err := os.MkdirAll(findingsDir, 0755); err != nil {
+	if err := os.MkdirAll(findingsDir, 0700); err != nil {
 		fmt.Printf("[!] Could not create findings directory: %v\n", err)
 		return ""
 	}
@@ -499,7 +505,7 @@ func saveRawOutput(output string, findingsDir string, host string) string {
 	filename := fmt.Sprintf("raw_%s_%s.txt", host, timestamp)
 	outpath := filepath.Join(findingsDir, filename)
 
-	if err := os.WriteFile(outpath, []byte(output), 0644); err != nil {
+	if err := os.WriteFile(outpath, []byte(output), 0600); err != nil {
 		fmt.Printf("[!] Could not save raw output: %v\n", err)
 		return ""
 	}
@@ -507,57 +513,77 @@ func saveRawOutput(output string, findingsDir string, host string) string {
 	return outpath
 }
 
-// extractSection extracts a specific section from the recon output
-func extractSection(output, sectionName string) string {
-	header := sectionHeaders[sectionName]
-	if header == "" {
-		return ""
-	}
-
-	lines := strings.Split(output, "\n")
-	sanitized := []string{}
-
+// extractAllSections performs a single forward pass over the cleaned recon output and
+// returns a map of section name → section text.
+//
+// sectionRe must include the per-session nonce (see buildSectionRe) so injected fake
+// headers cannot match. Ordering is also enforced: a header is accepted only when its
+// section number equals the next expected number, providing defence-in-depth even if
+// the nonce were somehow known to the attacker.
+func extractAllSections(raw string, sectionRe *regexp.Regexp) map[string]string {
+	// Sanitize all lines once (ANSI already stripped by executeRecon; null bytes and
+	// oversized lines may still be present after cleaning).
+	lines := strings.Split(raw, "\n")
+	sanitized := make([]string, 0, len(lines))
 	for _, line := range lines {
-		// Strip ANSI
-		clean := stripANSI(line)
-		// Strip null bytes
-		clean = strings.ReplaceAll(clean, "\x00", "")
-		// Truncate long lines
+		clean := strings.ReplaceAll(line, "\x00", "")
 		if len(clean) > 2048 {
 			clean = clean[:2048]
 		}
-		// Strip PS2 continuation lines
 		stripped := strings.TrimSpace(clean)
-		if strings.HasPrefix(stripped, "> ") || stripped == ">" {
+		if stripped == ">" || strings.HasPrefix(stripped, "> ") {
 			continue
 		}
 		sanitized = append(sanitized, clean)
 	}
 
-	// Find the section header — require the line to actually START with "[SECTION"
-	// so that echoed script lines like `echo "[SECTION 1] IDENTITY"` (which the PTY
-	// echoes back before executing the script) are not mistaken for real headers.
-	startIdx := -1
+	// Build index: 1-based section number → section name, from reconSections order.
+	sectionByNum := make(map[int]string, len(reconSections))
+	for i, name := range reconSections {
+		sectionByNum[i+1] = name
+	}
+
+	// Forward pass: accept a section header only when its number equals nextExpected.
+	// Out-of-order and duplicate headers (injected content) are silently skipped.
+	type span struct{ start, end int }
+	spans := make(map[string]span, len(reconSections))
+	order := make([]string, 0, len(reconSections))
+	nextExpected := 1
+
 	for i, line := range sanitized {
-		clean := strings.TrimSpace(line)
-		if strings.HasPrefix(clean, "[SECTION") && strings.Contains(clean, header) {
-			startIdx = i
-			break
+		m := sectionRe.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
 		}
-	}
-
-	if startIdx == -1 {
-		return ""
-	}
-
-	// Find the next section header (or end of output)
-	endIdx := len(sanitized)
-	for i := startIdx + 1; i < len(sanitized); i++ {
-		if strings.HasPrefix(strings.TrimSpace(sanitized[i]), "[SECTION") {
-			endIdx = i
-			break
+		n, ok := stringToInt(m[1])
+		if !ok || n != nextExpected {
+			continue // wrong order or bad number — injected header, skip
 		}
+		name, exists := sectionByNum[n]
+		if !exists {
+			continue
+		}
+		spans[name] = span{start: i}
+		order = append(order, name)
+		nextExpected++
 	}
 
-	return strings.Join(sanitized[startIdx:endIdx], "\n")
+	// Fill end boundaries: each section ends where the next begins.
+	for i, name := range order {
+		s := spans[name]
+		if i+1 < len(order) {
+			s.end = spans[order[i+1]].start
+		} else {
+			s.end = len(sanitized)
+		}
+		spans[name] = s
+	}
+
+	// Build result map.
+	result := make(map[string]string, len(reconSections))
+	for _, name := range order {
+		s := spans[name]
+		result[name] = strings.Join(sanitized[s.start:s.end], "\n")
+	}
+	return result
 }
