@@ -262,6 +262,13 @@ func (p *PTYUpgrader) Interact() error {
 	fmt.Printf("[*] Entering interactive mode with %s\n", p.addr)
 	fmt.Println("[*] Press Ctrl+D to close connection")
 
+	// TCP keepalive so the OS detects silent drops (NAT timeout, cable pull, etc.)
+	// without waiting for a user keypress to trigger a write error.
+	if tc, ok := p.conn.(*net.TCPConn); ok {
+		tc.SetKeepAlive(true)
+		tc.SetKeepAlivePeriod(10 * time.Second)
+	}
+
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		return err
@@ -281,11 +288,12 @@ func (p *PTYUpgrader) Interact() error {
 		close(winchCh)
 	}()
 
-	done := make(chan struct{})
+	remoteDone := make(chan struct{})
+	stdinDone := make(chan struct{})
 
 	// Remote -> stdout
 	go func() {
-		defer close(done)
+		defer close(remoteDone)
 		buf := make([]byte, 4096)
 		for {
 			n, err := p.conn.Read(buf)
@@ -299,22 +307,42 @@ func (p *PTYUpgrader) Interact() error {
 		}
 	}()
 
-	// Stdin -> remote. Ctrl+D closes the connection immediately rather than
-	// forwarding EOF to the remote shell, which may or may not act on it cleanly.
-	buf := make([]byte, 1)
-	for {
-		_, err := os.Stdin.Read(buf)
-		if err != nil {
-			break
+	// Stdin -> remote. Ctrl+D closes the connection immediately.
+	go func() {
+		defer close(stdinDone)
+		buf := make([]byte, 1)
+		for {
+			_, err := os.Stdin.Read(buf)
+			if err != nil {
+				return
+			}
+			if buf[0] == 0x04 { // Ctrl+D
+				p.conn.Close()
+				return
+			}
+			if _, err := p.conn.Write(buf); err != nil {
+				return
+			}
 		}
-		if buf[0] == 0x04 { // Ctrl+D
+	}()
+
+	// Wait for whichever side ends first.
+	select {
+	case <-remoteDone:
+		// Connection dropped or closed by remote. Close our side so the stdin
+		// goroutine's next Write fails and it exits on its own.
+		p.conn.Close()
+		fmt.Print("\r\n[*] Connection lost.\r\n")
+	case <-stdinDone:
+		// Ctrl+D or local EOF. Give the remote side a moment to drain.
+		select {
+		case <-remoteDone:
+		case <-time.After(500 * time.Millisecond):
 			p.conn.Close()
-			break
+			<-remoteDone
 		}
-		p.conn.Write(buf)
+		fmt.Print("\r\n[*] Session closed.\r\n")
 	}
 
-	<-done
-	fmt.Print("\r\n[*] Session closed.\r\n")
 	return nil
 }

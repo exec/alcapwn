@@ -63,7 +63,6 @@ func handleSession(conn net.Conn, verbosity int) {
 	printSummary(findings, matches)
 
 	u.Interact()
-	os.Exit(0)
 }
 
 func saveFindings(f *Findings, addr net.Addr) {

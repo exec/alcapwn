@@ -38,6 +38,7 @@ func main() {
 		if err != nil {
 			return // listener closed
 		}
-		go handleSession(conn, *verbose)
+		handleSession(conn, *verbose) // sequential — next conn queues in OS backlog
+		fmt.Printf("\n[*] Waiting for next connection on %s\n", *listen)
 	}
 }
