@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"sync"
 )
 
 // Compiled regexes at package level
@@ -34,6 +33,7 @@ var (
 	reDaemonPort      = regexp.MustCompile(`(\d+\.\d+\.\d+\.\d+):(\d+)`)
 	reSuidPath        = regexp.MustCompile(`/[\w/._-]+`)
 	reSuidLine        = regexp.MustCompile(`^/[\w/._-]+$`)
+	reOSDistro        = regexp.MustCompile(`(Ubuntu|Debian|CentOS|Red Hat|Fedora|Kali|Parrot|Raspbian)\s*(?:GNU/Linux)?[\s]*(\d+)?`)
 )
 
 type ReconParser struct{}
@@ -545,7 +545,7 @@ func (p *ReconParser) parseIdentity(output string) identityInfo {
 		result.os = stringPtr(strings.TrimSpace(match[1]))
 	} else {
 		// Fallback: try to extract from other patterns
-		osMatch := regexp.MustCompile(`(Ubuntu|Debian|CentOS|Red Hat|Fedora|Kali|Parrot|Raspbian)\s*(?:GNU/Linux)?[\s]*(\d+)?`).FindStringSubmatch(output)
+		osMatch := reOSDistro.FindStringSubmatch(output)
 		if osMatch != nil {
 			result.os = stringPtr(strings.TrimSpace(osMatch[0]))
 		} else {
@@ -812,22 +812,3 @@ func truncate(s string, maxLen int) string {
 	return string(runes[:maxLen])
 }
 
-func parseReconOutput(raw string) *Findings {
-	// Extract all sections in parallel — extractSection is read-only on raw.
-	sections := make(map[string]string, len(reconSections))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for _, section := range reconSections {
-		section := section
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			result := extractSection(raw, section)
-			mu.Lock()
-			sections[section] = result
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-	return (&ReconParser{}).Parse(sections)
-}
