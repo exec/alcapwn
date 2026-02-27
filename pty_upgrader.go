@@ -193,13 +193,22 @@ func (p *PTYUpgrader) finalizeUpgrade() error {
 	return nil
 }
 
+// reStripOSC strips OSC sequences (\x1b]...\x07 or \x1b]...\x1b\).
+// These are used for terminal title setting and other out-of-band data
+// and commonly appear inside shell prompts.
+var reStripOSC = regexp.MustCompile(`\x1b\][^\x07]*(?:\x07|\x1b\\)`)
+
+// reStripCSI strips CSI sequences including DEC private mode codes (\x1b[?...).
+// Matches the same set as reANSI in recon.go for consistency.
+var reStripCSI = regexp.MustCompile(`\x1b\[[?0-9;]*[a-zA-Z]`)
+
 // StripPrompts removes shell prompt lines from output.
 func (p *PTYUpgrader) StripPrompts(output string) string {
 	lines := []string{}
-	ansiRe := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 	for _, line := range strings.Split(output, "\n") {
-		clean := ansiRe.ReplaceAllString(line, "")
+		clean := reStripOSC.ReplaceAllString(line, "")
+		clean = reStripCSI.ReplaceAllString(clean, "")
 		clean = strings.TrimSpace(clean)
 
 		if strings.Contains(clean, "@") && (strings.Contains(clean, "$") || strings.Contains(clean, "#")) {

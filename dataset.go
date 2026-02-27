@@ -213,15 +213,37 @@ func matchFindings(f *Findings) []MatchResult {
 	}
 
 	// 5b. Match writable cron scripts
-	if len(f.WritableCrons) > 0 && len(writableCron) > 0 {
+	if len(f.WritableCrons) > 0 {
 		for _, scriptPath := range f.WritableCrons {
+			matched := false
 			for _, entry := range writableCron {
 				entryBinary := entry.Binary
 				if entryBinary != nil && *entryBinary != "" && filepath.Base(scriptPath) == *entryBinary {
 					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("Writable cron script %s matches %s", scriptPath, *entryBinary)))
 					matchedPaths[fmt.Sprintf("writable-cron-%s", *entryBinary)] = true
+					matched = true
 					break
 				}
+			}
+			if !matched {
+				// No specific dataset entry for this cron file — any writable cron
+				// is exploitable regardless of its name, so emit a generic match.
+				base := filepath.Base(scriptPath)
+				sev := "high"
+				matches = append(matches, MatchResult{
+					Entry: DatasetEntry{
+						ID:           "writable_cron_generic",
+						Category:     "WRITABLE_CRON",
+						Binary:       &base,
+						Exploitation: []string{"Append a reverse shell or command to the writable cron file"},
+						Source:       "generic",
+						Tags:         []string{"cron", "writable"},
+						Severity:     &sev,
+					},
+					MatchConfidence: "high",
+					MatchReason:     fmt.Sprintf("Writable cron file (no specific dataset entry): %s", scriptPath),
+				})
+				matchedPaths[fmt.Sprintf("writable-cron-generic-%s", scriptPath)] = true
 			}
 		}
 	}
