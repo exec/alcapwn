@@ -34,6 +34,8 @@ Catches the shell, upgrades to PTY, runs recon, and prints a summary:
 - Capabilities, writable crons, interesting files
 - Running services and versions
 
+After the summary, drops you into an interactive shell. `Ctrl+D` to close.
+
 Findings saved to `findings/` as JSON and raw output.
 
 ## License
