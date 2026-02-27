@@ -59,17 +59,24 @@ func handleSession(conn net.Conn, verbosity int) {
 
 	// saveFindings marshals JSON and writes to disk — run it concurrently
 	// with printSummary which is pure string formatting + stdout.
-	go saveFindings(findings, addr)
+	// The returned path is buffered and printed after Interact() so it
+	// doesn't interleave with raw-mode terminal output.
+	savedPath := make(chan string, 1)
+	go func() { savedPath <- saveFindings(findings, addr) }()
 	printSummary(findings, matches)
 
 	u.Interact()
+
+	if path := <-savedPath; path != "" {
+		fmt.Printf("\n[*] Findings saved to: %s\n", path)
+	}
 }
 
-func saveFindings(f *Findings, addr net.Addr) {
+func saveFindings(f *Findings, addr net.Addr) string {
 	findingsDir := "findings"
 	if err := os.MkdirAll(findingsDir, 0755); err != nil {
 		fmt.Printf("[!] Could not create findings directory: %v\n", err)
-		return
+		return ""
 	}
 
 	timestamp := time.Now().Format("20060102_150405")
@@ -82,18 +89,18 @@ func saveFindings(f *Findings, addr net.Addr) {
 		}
 	}
 	filename := fmt.Sprintf("findings_%s_%s.json", host, timestamp)
-	filepath := filepath.Join(findingsDir, filename)
+	outpath := filepath.Join(findingsDir, filename)
 
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		fmt.Printf("[!] Could not marshal findings: %v\n", err)
-		return
+		return ""
 	}
 
-	if err := os.WriteFile(filepath, data, 0644); err != nil {
+	if err := os.WriteFile(outpath, data, 0644); err != nil {
 		fmt.Printf("[!] Could not save findings: %v\n", err)
-		return
+		return ""
 	}
 
-	fmt.Printf("\n[*] Findings saved to: %s\n", filepath)
+	return outpath
 }
