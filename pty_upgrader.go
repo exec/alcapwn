@@ -199,7 +199,7 @@ func (p *PTYUpgrader) finalizeUpgrade() error {
 var reStripOSC = regexp.MustCompile(`\x1b\][^\x07]*(?:\x07|\x1b\\)`)
 
 // reStripCSI strips CSI sequences including DEC private mode codes (\x1b[?...).
-// Matches the same set as reANSI in recon.go for consistency.
+// Used by both StripPrompts and stripANSI (recon.go) for consistent stripping.
 var reStripCSI = regexp.MustCompile(`\x1b\[[?0-9;]*[a-zA-Z]`)
 
 // StripPrompts removes shell prompt lines from output.

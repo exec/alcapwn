@@ -40,7 +40,7 @@ func handleSession(conn net.Conn, verbosity int) {
 		fmt.Printf("[!] Could not create findings directory: %v\n", err)
 	}
 
-	raw, err := executeRecon(u, findingsDir, addr.String(), disp, reconIdx)
+	raw, rawPath, err := executeRecon(u, findingsDir, addr.String(), disp, reconIdx)
 	if err != nil {
 		disp.stop()
 		fmt.Printf("[!] Recon failed: %v\n", err)
@@ -56,6 +56,10 @@ func handleSession(conn net.Conn, verbosity int) {
 	// Stop the spinner and wipe the task list before printing the report.
 	disp.stop()
 	disp.clear()
+
+	if rawPath != "" {
+		fmt.Printf("[*] Raw output saved to: %s\n", rawPath)
+	}
 
 	// saveFindings marshals JSON and writes to disk — run it concurrently
 	// with printSummary which is pure string formatting + stdout.
