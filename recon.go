@@ -107,7 +107,9 @@ echo "Sudoers file:"
 if [ -f /etc/sudoers ]; then cat /etc/sudoers 2>/dev/null; fi
 echo ""
 echo "User sudo privileges:"
-sudo -n -l 2>/dev/null || echo "Cannot check sudo privileges"
+if ! sudo -n -l 2>/dev/null; then
+    echo "SUDO_REQUIRES_PASSWORD"
+fi
 echo ""
 
 # ------------------------------------------------------------

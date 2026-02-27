@@ -68,6 +68,7 @@ func (p *ReconParser) Parse(sections map[string]string) *Findings {
 
 	// Parse each section
 	sudoOutput := sections["SUDO ACCESS"]
+	f.SudoRequiresPassword = strings.Contains(sudoOutput, "SUDO_REQUIRES_PASSWORD")
 	f.SudoNopasswd = p.parseSudoNopasswd(sudoOutput)
 
 	suidOutput := sections["SUID/SGID BINARIES"]
@@ -606,7 +607,9 @@ func (p *ReconParser) checkCVECandidates(f *Findings, sections map[string]string
 
 	// CVE-2021-3156 (Baron Samedit) - Sudo heap buffer overflow
 	// Vulnerable: sudo < 1.9.5p2
-	if strings.Contains(sudoOutput, "sudo") {
+	// Skip entirely when sudo requires a password — we can't enumerate version or
+	// run sudo commands, so the finding has no actionable value for this session.
+	if strings.Contains(sudoOutput, "sudo") && !f.SudoRequiresPassword {
 		if sudoVersion != nil {
 			v := sudoVersion
 			if sudoBefore(v.major, v.minor, v.patch, v.pnum, 1, 9, 5, 2) {
