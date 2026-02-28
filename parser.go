@@ -34,6 +34,9 @@ var (
 	reSuidPath        = regexp.MustCompile(`/[\w/._-]+`)
 	reSuidLine        = regexp.MustCompile(`^/[\w/._-]+$`)
 	reOSDistro        = regexp.MustCompile(`(Ubuntu|Debian|CentOS|Red Hat|Fedora|Kali|Parrot|Raspbian)\s*(?:GNU/Linux)?[\s]*(\d+)?`)
+	rePolkitExec      = regexp.MustCompile(`pkexec version (\d+)\.(\d+)(?:\.(\d+))?`)
+	rePolkitDeb       = regexp.MustCompile(`polkit-pkg: polkit (\d+)\.(\d+)(?:\.(\d+))?-(\d+)`)
+	rePolkitRpm       = regexp.MustCompile(`(?m)^polkit-(\d+)\.(\d+)(?:\.(\d+))?-(\d+)`)
 )
 
 type ReconParser struct{}
@@ -78,6 +81,9 @@ func (p *ReconParser) Parse(sections map[string]string) *Findings {
 
 	capOutput := sections["CAPABILITIES"]
 	f.Capabilities = p.parseCapabilities(capOutput)
+	if pv := parsePolkitInfo(capOutput); pv.versionStr != "" {
+		f.PolkitVersion = stringPtr(pv.versionStr)
+	}
 
 	cronOutput := sections["CRON JOBS"]
 	f.WritableCrons = p.parseWritableCrons(cronOutput)
@@ -570,6 +576,7 @@ func (p *ReconParser) checkCVECandidates(f *Findings, sections map[string]string
 
 	sudoOutput := sections["SUDO ACCESS"]
 	suidOutput := sections["SUID/SGID BINARIES"]
+	capOutput := sections["CAPABILITIES"]
 	envOutput := sections["ENVIRONMENT & TOOLS"]
 
 	// Extract sudo version if present.
@@ -591,18 +598,29 @@ func (p *ReconParser) checkCVECandidates(f *Findings, sections map[string]string
 		sudoVersion = &struct{ major, minor, patch, pnum int }{major, minor, patch, pnum}
 	}
 
-	// CVE-2021-4034 (PwnKit) - Check for polkit/pkexec
-	if strings.Contains(suidOutput, "pkexec") || strings.Contains(sudoOutput, "polkit") {
-		cve := "CVE-2021-4034"
-		name := "PwnKit"
-		candidates = append(candidates, CveCandidate{
-			CVE:         cve,
-			Name:        name,
-			Description: "Local privilege escalation in pkexec",
-			Severity:    "critical",
-			Evidence:    "pkexec found in SUID binaries or sudo output",
-			Confidence:  "high",
-		})
+	// CVE-2021-4034 (PwnKit) — version-aware: only flag when pkexec is SUID and
+	// polkit is not confirmed patched. Presence of pkexec in SUID alone is not
+	// enough — pkexec is always SUID when polkit is installed.
+	if strings.Contains(suidOutput, "pkexec") {
+		pv := parsePolkitInfo(capOutput)
+		if !pv.isPatched {
+			confidence := "low"
+			evidence := "pkexec in SUID binaries (polkit version not detected)"
+			if pv.havePackageVersion {
+				confidence = "high"
+				evidence = fmt.Sprintf("pkexec in SUID, polkit %s (confirmed not patched)", pv.versionStr)
+			} else if pv.versionStr != "" {
+				evidence = fmt.Sprintf("pkexec in SUID, pkexec %s (package version not detected)", pv.versionStr)
+			}
+			candidates = append(candidates, CveCandidate{
+				CVE:         "CVE-2021-4034",
+				Name:        "PwnKit",
+				Description: "Local privilege escalation in pkexec",
+				Severity:    "critical",
+				Evidence:    evidence,
+				Confidence:  confidence,
+			})
+		}
 	}
 
 	// CVE-2021-3156 (Baron Samedit) - Sudo heap buffer overflow
@@ -612,7 +630,7 @@ func (p *ReconParser) checkCVECandidates(f *Findings, sections map[string]string
 	if strings.Contains(sudoOutput, "sudo") && !f.SudoRequiresPassword {
 		if sudoVersion != nil {
 			v := sudoVersion
-			if sudoBefore(v.major, v.minor, v.patch, v.pnum, 1, 9, 5, 2) {
+			if versionBefore(v.major, v.minor, v.patch, v.pnum, 1, 9, 5, 2) {
 				candidates = append(candidates, CveCandidate{
 					CVE:         "CVE-2021-3156",
 					Name:        "Baron Samedit",
@@ -647,7 +665,7 @@ func (p *ReconParser) checkCVECandidates(f *Findings, sections map[string]string
 		if sudoVersion != nil {
 			v := sudoVersion
 			// Vulnerable: < 1.8.28 (no p-number requirement)
-			if sudoBefore(v.major, v.minor, v.patch, v.pnum, 1, 8, 28, 0) {
+			if versionBefore(v.major, v.minor, v.patch, v.pnum, 1, 8, 28, 0) {
 				candidates = append(candidates, CveCandidate{
 					CVE:         "CVE-2019-14287",
 					Name:        "Sudo Integer Overflow (Bypass !root)",
@@ -782,9 +800,93 @@ func (p *ReconParser) checkCVECandidates(f *Findings, sections map[string]string
 	return candidates
 }
 
-// sudoBefore reports whether sudo version (maj, min, pat, pnum) is strictly
+// polkitInfo holds the result of polkit version detection from the CAPABILITIES section.
+type polkitInfo struct {
+	havePackageVersion bool   // true when dpkg or rpm package version was detected
+	isPatched          bool   // true when version is confirmed patched for CVE-2021-4034
+	versionStr         string // human-readable version string; empty if undetected
+}
+
+// parsePolkitInfo extracts polkit version details from the CAPABILITIES section output.
+// Priority: dpkg (most precise, includes Debian revision) → rpm → pkexec --version.
+//
+// Patch thresholds for CVE-2021-4034:
+//   - Debian/Ubuntu: polkit >= 0.105-33 is patched
+//   - Fedora:        polkit >= 0.117-2   is patched
+//   - Upstream:      polkit >= 0.120     is patched (upstream fix)
+func parsePolkitInfo(output string) polkitInfo {
+	buildVS := func(major, minor, patch int, hasPatch bool, rev int, hasRev bool) string {
+		vs := fmt.Sprintf("%d.%d", major, minor)
+		if hasPatch {
+			vs = fmt.Sprintf("%d.%d.%d", major, minor, patch)
+		}
+		if hasRev {
+			vs += fmt.Sprintf("-%d", rev)
+		}
+		return vs
+	}
+
+	// 1. dpkg: "polkit-pkg: polkit 0.105-33"
+	if m := rePolkitDeb.FindStringSubmatch(output); m != nil {
+		major, _ := stringToInt(m[1])
+		minor, _ := stringToInt(m[2])
+		patch, hasPatch := 0, m[3] != ""
+		if hasPatch {
+			patch, _ = stringToInt(m[3])
+		}
+		rev, _ := stringToInt(m[4])
+		patched := !versionBefore(major, minor, patch, 0, 0, 120, 0, 0) ||
+			(major == 0 && minor == 105 && !hasPatch && rev >= 33)
+		return polkitInfo{
+			havePackageVersion: true,
+			isPatched:          patched,
+			versionStr:         buildVS(major, minor, patch, hasPatch, rev, true),
+		}
+	}
+
+	// 2. rpm: "polkit-0.117-2.fc33.x86_64"
+	if m := rePolkitRpm.FindStringSubmatch(output); m != nil {
+		major, _ := stringToInt(m[1])
+		minor, _ := stringToInt(m[2])
+		patch, hasPatch := 0, m[3] != ""
+		if hasPatch {
+			patch, _ = stringToInt(m[3])
+		}
+		rev, _ := stringToInt(m[4])
+		patched := !versionBefore(major, minor, patch, 0, 0, 120, 0, 0) ||
+			(major == 0 && minor == 117 && !hasPatch && rev >= 2)
+		return polkitInfo{
+			havePackageVersion: true,
+			isPatched:          patched,
+			versionStr:         buildVS(major, minor, patch, hasPatch, rev, true),
+		}
+	}
+
+	// 3. pkexec --version: "pkexec version 0.105" — no revision, can only check upstream
+	if m := rePolkitExec.FindStringSubmatch(output); m != nil {
+		major, _ := stringToInt(m[1])
+		minor, _ := stringToInt(m[2])
+		patch, hasPatch := 0, m[3] != ""
+		if hasPatch {
+			patch, _ = stringToInt(m[3])
+		}
+		// Upstream >= 0.120 is definitively patched; earlier versions may have
+		// distro backports we can't detect without the package revision.
+		patched := !versionBefore(major, minor, patch, 0, 0, 120, 0, 0)
+		return polkitInfo{
+			havePackageVersion: false,
+			isPatched:          patched,
+			versionStr:         buildVS(major, minor, patch, hasPatch, 0, false),
+		}
+	}
+
+	return polkitInfo{} // version undetected
+}
+
+// versionBefore reports whether version (maj, min, pat, pnum) is strictly
 // less than the target version (tMaj, tMin, tPat, tPnum).
-func sudoBefore(maj, min, pat, pnum, tMaj, tMin, tPat, tPnum int) bool {
+// Used for sudo, polkit, and any other 4-component version comparisons.
+func versionBefore(maj, min, pat, pnum, tMaj, tMin, tPat, tPnum int) bool {
 	switch {
 	case maj != tMaj:
 		return maj < tMaj

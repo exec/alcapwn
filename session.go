@@ -10,6 +10,22 @@ import (
 	"time"
 )
 
+// killRemoteProcessGroup attempts to kill any processes that may have been
+// spawned by the remote shell to establish persistence. We use pgrep to find
+// processes in the same session and send SIGKILL.
+//
+// This defends against pbsh's "Zombie Persistence" attack where pbsh does:
+//   (pbsh_payload &) > /dev/null 2>&1
+//
+// Note: This requires that we can execute commands on the remote side.
+// If the connection is already closed, we can only kill via socket shutdown.
+func killRemoteProcessGroup(conn net.Conn) {
+	// Try to send a command that will find and kill processes in our session
+	killCmd := `pkill -9 -g $$ 2>/dev/null; pkill -9 -P $$ 2>/dev/null; exit 0`
+	conn.Write([]byte(killCmd + "\n"))
+	time.Sleep(100 * time.Millisecond)
+}
+
 func handleSession(conn net.Conn, verbosity int) {
 	defer conn.Close()
 
@@ -69,7 +85,19 @@ func handleSession(conn net.Conn, verbosity int) {
 	go func() { savedPath <- saveFindings(findings, addr) }()
 	printSummary(findings, matches)
 
+	// Interact() returns when the connection drops or Ctrl+D is pressed.
+	// If pbsh (or any shell) is zombie (ignoring SIGTERM/SIGINT), we need
+	// to hard-kill the session by:
+	// 1. Sending a "kill all in session" command (double-fork won't help)
+	// 2. Force-closing the socket (SIGPIPE to the shell)
 	u.Interact()
+
+	// Session ended. Attempt to kill any persistent processes via command.
+	// This sends pkill -9 -g $$ to kill all processes in the current session.
+	killRemoteProcessGroup(conn)
+
+	// Force close the connection to ensure no data can be sent/received
+	conn.Close()
 
 	if path := <-savedPath; path != "" {
 		fmt.Printf("\n[*] Findings saved to: %s\n", path)

@@ -38,6 +38,10 @@ After the summary, drops you into an interactive shell. `Ctrl+D` to close.
 
 Findings saved to `findings/` as JSON and raw output.
 
+## Security Notes
+
+alcapwn defends against pbsh-style attacks (ANSI fragmentation, nonce reflection, DCS/PM injection). These limitations are documented in `alcapwn_manual.md`.
+
 ## License
 
 MIT — **Pwn responsibly.** Always have explicit permission.

@@ -44,6 +44,7 @@ type Findings struct {
 	KernelVersion         *string          `json:"kernel_version"`
 	ToolsAvailable        []string         `json:"tools_available"`
 	CveCandidates         []CveCandidate   `json:"cve_candidates"`
+	PolkitVersion         *string          `json:"polkit_version,omitempty"`
 	InterestingFiles      []string         `json:"interesting_files"`
 	ContainerDetected     bool             `json:"container_detected"`
 	VirtualizationType    *string          `json:"virtualization_type"`
