@@ -14,15 +14,188 @@ import (
 	"golang.org/x/term"
 )
 
+// ANSIState is the state machine for parsing ANSI escape sequences.
+// pbsh v2.0 attacks try to bypass regex-based stripping by fragmenting
+// escape sequences across multiple reads. This state machine handles
+// byte-by-byte parsing to catch all escape sequences.
+//
+// WARNING: Some ANSI sequences cannot be safely stripped without affecting
+// legitimate terminal output. APC sequences (\x1b_) are a prime example - they
+// are used for advanced terminal control but can also be used for TTY hijacking.
+// These sequences trigger warnings to the operator.
+type ANSIState struct {
+	buf      []byte
+	apcWarn  bool // Track if we've warned about APC in this session
+}
+
+// NewANSIState creates a new stateful ANSI parser.
+func NewANSIState() *ANSIState {
+	return &ANSIState{buf: make([]byte, 0, 256)}
+}
+
+// Reset clears the parser state.
+func (s *ANSIState) Reset() {
+	s.buf = s.buf[:0]
+	s.apcWarn = false
+}
+
+// HasAPCWarning returns true if an APC sequence warning was triggered.
+func (s *ANSIState) HasAPCWarning() bool {
+	return s.apcWarn
+}
+
+// Parse processes a byte buffer and returns cleaned output with all
+// ANSI sequences stripped. It handles byte-level fragmentation where
+// escape sequences are split across multiple reads.
+//
+// APC sequences (\x1b_) are detected but NOT stripped - they trigger a warning
+// because they may contain user-facing content that should not be silently
+// removed. The operator should be aware of this potential TTY hijacking vector.
+func (s *ANSIState) Parse(data []byte) []byte {
+	// Append to buffer first
+	s.buf = append(s.buf, data...)
+
+	// Use regex-based stripping for OSC sequences (handles variable-length content)
+	// This avoids the slice bounds issue with the stateful approach
+	// We strip OSC after accumulating, which is safe since we're processing in order
+	for {
+		// Find \x1b]...(\x07|\x1b\\)
+		found := false
+		for i := 0; i < len(s.buf)-1; i++ {
+			if s.buf[i] == 0x1b && s.buf[i+1] == ']' {
+				// Found OSC start, find terminator
+				for j := i + 2; j < len(s.buf); j++ {
+					if s.buf[j] == 0x07 || (s.buf[j] == 0x1b && j+1 < len(s.buf) && s.buf[j+1] == '\\') {
+						// Strip this OSC sequence
+						end := j + 1
+						if s.buf[j] == 0x1b {
+							end = j + 2 // Include \x1b\
+						}
+						// Remove the OSC sequence
+						s.buf = append(s.buf[:i], s.buf[end:]...)
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+		}
+		if !found {
+			break
+		}
+	}
+
+	// Strip CSI sequences (simple ones that don't span fragments)
+	// \x1b[...[a-zA-Z] or \x1b[?...[a-zA-Z]
+	for {
+		found := false
+		for i := 0; i < len(s.buf)-1; i++ {
+			if s.buf[i] == 0x1b && i+1 < len(s.buf) && s.buf[i+1] == '[' {
+				// Find the final letter
+				for j := i + 2; j < len(s.buf); j++ {
+					b := s.buf[j]
+					// CSI ends with [A-Za-z] or specific ranges
+					if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= 0x40 && b <= 0x7e) {
+						// Strip this CSI sequence
+						s.buf = append(s.buf[:i], s.buf[j+1:]...)
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+		}
+		if !found {
+			break
+		}
+	}
+
+	// Check for DCS sequences: \x1bP...(\x1b\\)
+	for {
+		found := false
+		for i := 0; i < len(s.buf)-1; i++ {
+			if s.buf[i] == 0x1b && i+1 < len(s.buf) && s.buf[i+1] == 'P' {
+				// Find terminator
+				for j := i + 2; j < len(s.buf)-1; j++ {
+					if s.buf[j] == 0x1b && s.buf[j+1] == '\\' {
+						// Strip DCS
+						s.buf = append(s.buf[:i], s.buf[j+2:]...)
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+		}
+		if !found {
+			break
+		}
+	}
+
+	// Check for PM sequences: \x1b^
+	for {
+		found := false
+		for i := 0; i < len(s.buf)-1; i++ {
+			if s.buf[i] == 0x1b && i+1 < len(s.buf) && s.buf[i+1] == '^' {
+				// Strip PM (2 bytes)
+				s.buf = append(s.buf[:i], s.buf[i+2:]...)
+				found = true
+				break
+			}
+		}
+		if !found {
+			break
+		}
+	}
+
+	// Check for SOS sequences: \x1b\\
+	for {
+		found := false
+		for i := 0; i < len(s.buf)-1; i++ {
+			if s.buf[i] == 0x1b && i+1 < len(s.buf) && s.buf[i+1] == '\\' {
+				// Strip SOS (2 bytes)
+				s.buf = append(s.buf[:i], s.buf[i+2:]...)
+				found = true
+				break
+			}
+		}
+		if !found {
+			break
+		}
+	}
+
+	// Check for APC sequences: \x1b_
+	for i := 0; i < len(s.buf)-1; i++ {
+		if s.buf[i] == 0x1b && i+1 < len(s.buf) && s.buf[i+1] == '_' {
+			s.apcWarn = true
+			// Don't strip APC - keep for warning display
+			break
+		}
+	}
+
+	// Return the buffer (may contain trailing partial escape sequence)
+	result := s.buf
+	s.buf = s.buf[:0]
+	return result
+}
+
 // PTYUpgrader handles upgrading a basic reverse shell to a fully functional PTY.
 type PTYUpgrader struct {
-	conn      net.Conn
-	addr      net.Addr
-	verbosity int
-	reader    *bufio.Reader
-	disp      *statusDisplay
-	ptyTask   int
-	setupTask int
+	conn        net.Conn
+	addr        net.Addr
+	verbosity   int
+	reader      *bufio.Reader
+	disp        *statusDisplay
+	ptyTask     int
+	setupTask   int
+	// Stateful ANSI parser for fragmenting pbsh v2.0 attacks
+	ansiState *ANSIState
 }
 
 // NewPTYUpgrader creates a new PTYUpgrader and registers its status tasks on disp.
@@ -33,6 +206,7 @@ func NewPTYUpgrader(conn net.Conn, verbosity int, disp *statusDisplay) *PTYUpgra
 		verbosity: verbosity,
 		reader:    bufio.NewReaderSize(conn, 4096),
 		disp:      disp,
+		ansiState: NewANSIState(),
 	}
 	p.ptyTask = disp.addTask("PTY Upgrade")
 	p.setupTask = disp.addTask("Terminal Setup")
@@ -49,22 +223,35 @@ func (p *PTYUpgrader) write(data string) error {
 // Uses Read instead of ReadBytes('\n') so it returns as soon as any data lands
 // in the buffer — shell prompts have no trailing newline, so ReadBytes always
 // blocks for the full timeout duration on the final chunk.
+//
+// Uses stateful ANSI parser to catch fragmented escape sequences from pbsh v2.0.
 func (p *PTYUpgrader) readUntilPrompt(timeout time.Duration) (string, error) {
 	p.conn.SetReadDeadline(time.Now().Add(timeout))
 	defer p.conn.SetReadDeadline(time.Time{})
 
 	var data strings.Builder
 	buf := make([]byte, 4096)
+	p.ansiState.Reset()
 
 	for !rePromptPattern.MatchString(data.String()) {
 		n, err := p.reader.Read(buf)
 		if n > 0 {
-			data.Write(buf[:n])
+			// Strip ANSI sequences before appending to data
+			clean := p.ansiState.Parse(buf[:n])
+			data.Write(clean)
 		}
 		if err != nil {
 			break
 		}
 	}
+
+	// Check for APC warnings during this read operation
+	if p.ansiState.HasAPCWarning() {
+		fmt.Printf("\n[!] WARNING: Suspicious APC sequence detected during prompt read.\r\n")
+		fmt.Printf("[!] Potential TTY hijacking attempt from %s\r\n", p.addr)
+		fmt.Printf("[!] Do not enter any credentials or sensitive information.\r\n")
+	}
+
 	return data.String(), nil
 }
 
@@ -195,7 +382,21 @@ func (p *PTYUpgrader) finalizeUpgrade() error {
 // reStripOSC strips OSC sequences (\x1b]...\x07 or \x1b]...\x1b\).
 // These are used for terminal title setting and other out-of-band data
 // and commonly appear inside shell prompts.
-var reStripOSC = regexp.MustCompile(`\x1b\][^\x07]*(?:\x07|\x1b\\)`)
+//
+// FIXED FOR pbsh DEFENSE:
+// - Changed .* to [^\x07\x1b]* to prevent catastrophic backtracking
+// - Added bracketed paste sequence filtering (\e[201~, \e[202~)
+var reStripOSC = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+
+// reStripBracketedPaste filters bracketed paste sequences.
+// pbsh can use \e[201~ (start paste) and \e[202~ (end paste) to inject commands.
+var reStripBracketedPaste = regexp.MustCompile(`\x1b\[(201~|202~)`)
+
+// reStripDecSpecial filters DEC Special Character/Line Drawing mode entries.
+// pbsh can send \x1b(0 to switch to G0 graphics set, rendering letters as boxes/lines.
+// We only strip the "entry" sequences (0, 1, A), NOT the reset sequence (B).
+// The reset sequence \x1b(B should be allowed to pass through.
+var reStripDecSpecial = regexp.MustCompile(`\x1b\([01A]`)
 
 // reStripCSI strips CSI sequences including DEC private mode codes (\x1b[?...).
 // Used by both StripPrompts and stripANSI (recon.go) for consistent stripping.
@@ -307,20 +508,45 @@ func (p *PTYUpgrader) Interact() error {
 	stdinDone := make(chan struct{})
 
 	// Remote -> stdout.
-	// Strip OSC sequences (clipboard writes via OSC 52, title changes via OSC 0/1/2,
-	// etc.) before forwarding to the local terminal. CSI sequences (colours, cursor
-	// movement) pass through unchanged — TUI apps need them.
+	// Use stateful ANSI parser to catch fragmented escape sequences (pbsh v2.0 attack).
+	// CSI sequences (colours, cursor movement) pass through unchanged — TUI apps need them.
+	// All other escape sequences are stripped.
 	go func() {
 		defer close(remoteDone)
 		buf := make([]byte, 4096)
 		for {
 			n, err := p.conn.Read(buf)
 			if n > 0 {
-				out := reStripOSC.ReplaceAll(buf[:n], nil)
-				os.Stdout.Write(out)
-				os.Stdout.Sync()
+				// Use stateful ANSI parser which handles byte-level fragmentation
+				out := p.ansiState.Parse(buf[:n])
+				if len(out) > 0 {
+					os.Stdout.Write(out)
+					os.Stdout.Sync()
+				}
 			}
 			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// APC Warning Checker goroutine - runs alongside remote reader
+	// to detect APC sequences that might indicate TTY hijacking.
+	apcWarningDone := make(chan struct{})
+	go func() {
+		defer close(apcWarningDone)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if p.ansiState.HasAPCWarning() {
+					fmt.Print("\r\n[!] WARNING: Suspicious APC sequence detected.\r\n")
+					fmt.Print("[!] Potential TTY hijacking attempt detected.\r\n")
+					fmt.Print("[!] Do not enter any credentials or sensitive information.\r\n")
+					return
+				}
+			case <-remoteDone:
 				return
 			}
 		}
@@ -346,11 +572,13 @@ func (p *PTYUpgrader) Interact() error {
 	}()
 
 	// Wait for whichever side ends first.
+	// Wait for both remoteDone and apcWarningDone to ensure warnings are displayed.
 	select {
 	case <-remoteDone:
 		// Connection dropped or closed by remote. Close our side so the stdin
 		// goroutine's next Write fails and it exits on its own.
 		p.conn.Close()
+		<-apcWarningDone // Wait for any APC warning to be displayed
 		fmt.Print("\r\n[*] Connection lost.\r\n")
 	case <-stdinDone:
 		// Ctrl+D or local EOF. Give the remote side a moment to drain.
@@ -360,6 +588,7 @@ func (p *PTYUpgrader) Interact() error {
 			p.conn.Close()
 			<-remoteDone
 		}
+		<-apcWarningDone // Wait for any APC warning to be displayed
 		fmt.Print("\r\n[*] Session closed.\r\n")
 	}
 

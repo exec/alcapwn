@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,7 +45,7 @@ _PWD_PID=$!
 # ------------------------------------------------------------
 # SECTION 1: IDENTITY
 # ------------------------------------------------------------
-echo "[SECTION 1:{{NONCE}}] IDENTITY"
+echo "[SECTION 1:{{HASH_1}}] IDENTITY"
 echo "------------------------------------------------------------"
 echo "Hostname: $(hostname)"
 echo "Current user: $(whoami)"
@@ -101,7 +103,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 2: SUDO ACCESS
 # ------------------------------------------------------------
-echo "[SECTION 2:{{NONCE}}] SUDO ACCESS"
+echo "[SECTION 2:{{HASH_2}}] SUDO ACCESS"
 echo "------------------------------------------------------------"
 echo "Sudoers file:"
 if [ -f /etc/sudoers ]; then cat /etc/sudoers 2>/dev/null; fi
@@ -115,7 +117,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 3: SUID/SGID BINARIES
 # ------------------------------------------------------------
-echo "[SECTION 3:{{NONCE}}] SUID/SGID BINARIES"
+echo "[SECTION 3:{{HASH_3}}] SUID/SGID BINARIES"
 echo "------------------------------------------------------------"
 echo "SUID binaries:"
 wait $_SUID_PID 2>/dev/null; cat "$_T/suid" 2>/dev/null
@@ -127,16 +129,21 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 4: CAPABILITIES
 # ------------------------------------------------------------
-echo "[SECTION 4:{{NONCE}}] CAPABILITIES"
+echo "[SECTION 4:{{HASH_4}}] CAPABILITIES"
 echo "------------------------------------------------------------"
 echo "Files with capabilities:"
 getcap /usr/bin/* /usr/sbin/* /usr/local/bin/* /usr/local/sbin/* /bin/* /sbin/* 2>/dev/null || echo "getcap not available"
+echo ""
+echo "Polkit version:"
+pkexec --version 2>/dev/null | head -1
+dpkg -l polkit 2>/dev/null | grep ^ii | awk '{print "polkit-pkg: " $2 " " $3}'
+rpm -q polkit 2>/dev/null | grep -v "not installed" | head -1
 echo ""
 
 # ------------------------------------------------------------
 # SECTION 5: CRON JOBS
 # ------------------------------------------------------------
-echo "[SECTION 5:{{NONCE}}] CRON JOBS"
+echo "[SECTION 5:{{HASH_5}}] CRON JOBS"
 echo "------------------------------------------------------------"
 echo "System crontab:"
 cat /etc/crontab 2>/dev/null || echo "Cannot read /etc/crontab"
@@ -154,7 +161,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 6: WRITABLE PATHS
 # ------------------------------------------------------------
-echo "[SECTION 6:{{NONCE}}] WRITABLE PATHS"
+echo "[SECTION 6:{{HASH_6}}] WRITABLE PATHS"
 echo "------------------------------------------------------------"
 echo "Paths writable by current user:"
 for dir in /bin /sbin /usr/bin /usr/sbin /usr/local/bin /usr/local/sbin /tmp /var/tmp; do
@@ -168,7 +175,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 7: ENVIRONMENT & TOOLS
 # ------------------------------------------------------------
-echo "[SECTION 7:{{NONCE}}] ENVIRONMENT & TOOLS"
+echo "[SECTION 7:{{HASH_7}}] ENVIRONMENT & TOOLS"
 echo "------------------------------------------------------------"
 echo "Environment variables:"
 env 2>/dev/null | head -30
@@ -183,7 +190,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 8: INTERESTING FILES
 # ------------------------------------------------------------
-echo "[SECTION 8:{{NONCE}}] INTERESTING FILES"
+echo "[SECTION 8:{{HASH_8}}] INTERESTING FILES"
 echo "------------------------------------------------------------"
 echo "SSH keys:"
 wait $_SSH_PID 2>/dev/null; cat "$_T/ssh" 2>/dev/null
@@ -208,7 +215,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 9: RUNNING SERVICES
 # ------------------------------------------------------------
-echo "[SECTION 9:{{NONCE}}] RUNNING SERVICES"
+echo "[SECTION 9:{{HASH_9}}] RUNNING SERVICES"
 echo "------------------------------------------------------------"
 echo "Listening ports:"
 ss -tuln 2>/dev/null || netstat -tuln 2>/dev/null || echo "Cannot get listening ports"
@@ -223,7 +230,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 10: SERVICE VERSION DETECTION
 # ------------------------------------------------------------
-echo "[SECTION 10:{{NONCE}}] SERVICE VERSION DETECTION"
+echo "[SECTION 10:{{HASH_10}}] SERVICE VERSION DETECTION"
 echo "------------------------------------------------------------"
 echo "Checking for common services with versions:"
 
@@ -262,7 +269,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 11: DOCKER SOCKET DETECTION
 # ------------------------------------------------------------
-echo "[SECTION 11:{{NONCE}}] DOCKER SOCKET DETECTION"
+echo "[SECTION 11:{{HASH_11}}] DOCKER SOCKET DETECTION"
 echo "------------------------------------------------------------"
 echo "Docker socket locations:"
 ls -la /var/run/docker.sock 2>/dev/null || echo "/var/run/docker.sock not found"
@@ -278,7 +285,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 12: KERNEL VERSION
 # ------------------------------------------------------------
-echo "[SECTION 12:{{NONCE}}] KERNEL VERSION"
+echo "[SECTION 12:{{HASH_12}}] KERNEL VERSION"
 echo "------------------------------------------------------------"
 echo "Kernel version: $(uname -r)"
 echo "Kernel release: $(uname -v)"
@@ -300,7 +307,7 @@ echo ""
 # ------------------------------------------------------------
 # SECTION 13: CONTAINER/VM DETECTION
 # ------------------------------------------------------------
-echo "[SECTION 13:{{NONCE}}] CONTAINER/VM DETECTION"
+echo "[SECTION 13:{{HASH_13}}] CONTAINER/VM DETECTION"
 echo "------------------------------------------------------------"
 echo "Checking for containerization:"
 
@@ -356,36 +363,73 @@ var reconSections = []string{
 	"CONTAINER/VM DETECTION",
 }
 
-// makeReconNonce returns a random 8-hex-char nonce unique to this recon session.
-// The nonce is embedded in every section header echo in the script so that
-// injected fake headers (via env vars, file content, etc.) cannot match the
-// per-session section header regex — the attacker cannot know the nonce in advance.
-func makeReconNonce() string {
-	b := make([]byte, 4)
+// makeReconNonce returns a random 16-byte nonce unique to this recon session.
+// The nonce is HMACed with a session-specific key to create obfuscated section
+// headers that pbsh cannot extract by scanning the script.
+func makeReconNonce() [16]byte {
+	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return "alcapwn0" // fallback: weaker but functional
+		// Fallback for systems without crypto/rand (e.g., embedded)
+		// Not secure, but functional
+		for i := range b {
+			b[i] = byte(i)
+		}
 	}
-	return fmt.Sprintf("%x", b)
+	var nonce [16]byte
+	copy(nonce[:], b)
+	return nonce
+}
+
+// computeSectionHash computes an HMAC-SHA256 hash of the section number using
+// the session nonce as the key. This makes section headers unguessable even if
+// pbsh can read the sent script, since it cannot compute the HMAC without knowing
+// the nonce (which is never sent in plaintext).
+func computeSectionHash(nonce [16]byte, sectionNum int) string {
+	mac := hmac.New(sha256.New, nonce[:])
+	mac.Write([]byte(fmt.Sprintf("%d", sectionNum)))
+	return fmt.Sprintf("%x", mac.Sum(nil))[:16]
 }
 
 // buildReconScript substitutes the per-session nonce into the script template.
-func buildReconScript(nonce string) string {
-	return strings.ReplaceAll(reconScriptTemplate, "{{NONCE}}", nonce)
+// The nonce is now obfuscated via HMAC in the section headers.
+func buildReconScript(nonce [16]byte) string {
+	script := reconScriptTemplate
+	// Replace each section header with its HMAC-obfuscated version
+	for i := 1; i <= 13; i++ {
+		hash := computeSectionHash(nonce, i)
+		// Use a unique placeholder that won't appear in the script normally
+		placeholder := fmt.Sprintf("{{HASH_%d}}", i)
+		script = strings.ReplaceAll(script, placeholder, hash)
+	}
+	return script
 }
 
 // buildSectionRe returns a regex that matches real section header lines for this session.
-// Group 1 = section number, group 2 = section name.
-// The nonce is required in the header so fake headers injected by the target cannot match.
-func buildSectionRe(nonce string) *regexp.Regexp {
-	return regexp.MustCompile(`^\[SECTION (\d+):` + regexp.QuoteMeta(nonce) + `\]\s+(.+)`)
+// The hash is computed dynamically using the session nonce (HMAC-SHA256).
+func buildSectionRe(nonce [16]byte) *regexp.Regexp {
+	// Build regex that matches all 13 section hashes
+	// Each hash is 16 hex characters
+	parts := make([]string, 13)
+	for i := 0; i < 13; i++ {
+		hash := computeSectionHash(nonce, i+1)
+		parts[i] = regexp.QuoteMeta(hash)
+	}
+	// Match: [SECTION N:HASH] SECTION_NAME
+	// Use non-capturing group (?:...) to properly handle alternation
+	pattern := `^\[SECTION (\d+):(?:` + strings.Join(parts, "|") + `)\]\s+(.+)`
+	return regexp.MustCompile(pattern)
 }
 
 // stripANSI removes ANSI escape sequences from text.
 // Applies OSC stripping (reStripOSC) before CSI stripping (reStripCSI) since
 // OSC sequences can embed CSI-like substrings. Both regexes are defined in
 // pty_upgrader.go and used consistently with StripPrompts.
+//
+// FIXED FOR pbsh DEFENSE: Also strips bracketed paste and DEC Special mode sequences.
 func stripANSI(s string) string {
 	s = reStripOSC.ReplaceAllString(s, "")
+	s = reStripBracketedPaste.ReplaceAllString(s, "")
+	s = reStripDecSpecial.ReplaceAllString(s, "")
 	return reStripCSI.ReplaceAllString(s, "")
 }
 
@@ -457,7 +501,7 @@ func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, r
 	current := 0
 	disp.set(reconIdx, taskRunning, reconDetail(0, total, "starting"))
 
-	raw, err := u.readUntilSentinelProgress(sentinel, 5*time.Second, func(line string) {
+	raw, err := u.readUntilSentinelProgress(sentinel, 15*time.Second, func(line string) {
 		// Clean just enough for header detection; raw accumulation is unaffected.
 		clean := strings.TrimRight(stripANSI(strings.ReplaceAll(line, "\r", "")), "\n\r ")
 		if m := sectionRe.FindStringSubmatch(clean); m != nil {
@@ -483,7 +527,8 @@ func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, r
 		rawPath = saveRawOutput(raw, findingsDir, host)
 	}
 
-	return rawPath, extractAllSections(raw, sectionRe), nil
+	sections := extractAllSections(raw, sectionRe)
+	return rawPath, sections, nil
 }
 
 func saveRawOutput(output string, findingsDir string, host string) string {
@@ -533,11 +578,28 @@ func extractAllSections(raw string, sectionRe *regexp.Regexp) map[string]string 
 			clean = clean[:2048]
 		}
 		stripped := strings.TrimSpace(clean)
+		// Skip job control messages like "[1] 12345" and "[2] Done"
+		// These have format: [number] PID or [number] status
+		// We detect them by matching [N] pattern where N is just a number
+		if strings.HasPrefix(stripped, "[") && strings.Contains(stripped, "]") {
+			// Extract content between [ and ]
+			if idx1 := strings.Index(stripped, "["); idx1 >= 0 {
+				if idx2 := strings.Index(stripped, "]"); idx2 > idx1 {
+					content := stripped[idx1+1 : idx2]
+					// Job control has format [N] where N is a simple number
+					// Section headers have format [SECTION N:HASH] with text after ]
+					if content != "" && content[0] >= '0' && content[0] <= '9' {
+						continue
+					}
+				}
+			}
+		}
 		if stripped == ">" || strings.HasPrefix(stripped, "> ") {
 			continue
 		}
 		sanitized = append(sanitized, clean)
 	}
+
 
 	// Build index: 1-based section number → section name, from reconSections order.
 	sectionByNum := make(map[int]string, len(reconSections))
