@@ -187,19 +187,25 @@ func (s *ANSIState) Parse(data []byte) []byte {
 
 // PTYUpgrader handles upgrading a basic reverse shell to a fully functional PTY.
 type PTYUpgrader struct {
-	conn        net.Conn
-	addr        net.Addr
-	verbosity   int
-	reader      *bufio.Reader
-	disp        *statusDisplay
-	ptyTask     int
-	setupTask   int
+	conn      net.Conn
+	addr      net.Addr
+	verbosity int
+	reader    *bufio.Reader
+	disp      *statusDisplay
+	ptyTask   int
+	setupTask int
 	// Stateful ANSI parser for fragmenting pbsh v2.0 attacks
 	ansiState *ANSIState
+	// TLS reconnect support — populated only when tlsMode is true.
+	tlsMode    bool
+	usedPython bool   // true if python3 or python drove the PTY upgrade
+	pythonBin  string // "python3" or "python"
 }
 
 // NewPTYUpgrader creates a new PTYUpgrader and registers its status tasks on disp.
-func NewPTYUpgrader(conn net.Conn, verbosity int, disp *statusDisplay) *PTYUpgrader {
+// tlsMode gates the post-upgrade Python detection needed for TLS reconnect;
+// when false it is a strict no-op so --tls=false behaviour is byte-for-byte identical.
+func NewPTYUpgrader(conn net.Conn, verbosity int, disp *statusDisplay, tlsMode bool) *PTYUpgrader {
 	p := &PTYUpgrader{
 		conn:      conn,
 		addr:      conn.RemoteAddr(),
@@ -207,16 +213,34 @@ func NewPTYUpgrader(conn net.Conn, verbosity int, disp *statusDisplay) *PTYUpgra
 		reader:    bufio.NewReaderSize(conn, 4096),
 		disp:      disp,
 		ansiState: NewANSIState(),
+		tlsMode:   tlsMode,
 	}
 	p.ptyTask = disp.addTask("PTY Upgrade")
 	p.setupTask = disp.addTask("Terminal Setup")
 	return p
 }
 
+// switchConn replaces the underlying connection after a TLS reconnect.
+func (p *PTYUpgrader) switchConn(c net.Conn) {
+	p.conn = c
+	p.reader = bufio.NewReaderSize(c, 4096)
+}
+
 // write sends data to the connection.
 func (p *PTYUpgrader) write(data string) error {
 	_, err := p.conn.Write([]byte(data))
 	return err
+}
+
+// PythonBin returns the detected Python binary ("python3" or "python").
+// Only valid after PTY upgrade completes and only if tlsMode was true.
+func (p *PTYUpgrader) PythonBin() string {
+	return p.pythonBin
+}
+
+// UsedPython returns true if Python was used for the PTY upgrade.
+func (p *PTYUpgrader) UsedPython() bool {
+	return p.usedPython
 }
 
 // readUntilPrompt reads until a prompt pattern ($ or #) is detected or timeout.
@@ -281,6 +305,9 @@ func (p *PTYUpgrader) readUntilSentinelProgress(sentinel string, timeout time.Du
 			}
 		}
 		if err != nil {
+			if p.verbosity >= 2 {
+				fmt.Printf("[DEBUG readUntilSentinel] err=%v, sb=%q\n", err, sb.String())
+			}
 			return sb.String(), err
 		}
 	}
@@ -288,6 +315,9 @@ func (p *PTYUpgrader) readUntilSentinelProgress(sentinel string, timeout time.Du
 	data := sb.String()
 	if idx := strings.Index(data, sentinel); idx >= 0 {
 		data = data[:idx]
+	}
+	if p.verbosity >= 2 {
+		fmt.Printf("[DEBUG readUntilSentinel] returning %q\n", data)
 	}
 	return data, nil
 }
@@ -376,7 +406,43 @@ func (p *PTYUpgrader) finalizeUpgrade() error {
 	p.readUntilPrompt(1 * time.Second)
 
 	p.disp.set(p.setupTask, taskDone, "")
+
+	// Only when TLS mode is active do we need to know which Python binary is available.
+	// This detection is a strict no-op when tlsMode is false.
+	if p.tlsMode {
+		p.detectPythonBin()
+	}
+
 	return nil
+}
+
+// detectPythonBin queries the upgraded shell to determine which Python binary the
+// upgrade chain used (python3 first, then python). Sets usedPython and pythonBin.
+// Called when tlsMode is true (during PTY upgrade) or when manually upgrading
+// a session to TLS via cmdTLSUpgrade.
+func (p *PTYUpgrader) detectPythonBin() {
+	const sentinel = "ALCAPWN_PYEND"
+	cmd := "if command -v python3 >/dev/null 2>&1; then echo ALCAPWN_PY3; elif command -v python >/dev/null 2>&1; then echo ALCAPWN_PY; else echo ALCAPWN_NOPY; fi; echo " + sentinel + "\n"
+	if err := p.write(cmd); err != nil {
+		if p.verbosity >= 2 {
+			fmt.Fprintf(os.Stderr, "[DEBUG detectPythonBin] write failed: %v\n", err)
+		}
+		return
+	}
+	output, err := p.readUntilSentinel(sentinel, 5*time.Second)
+	p.readUntilPrompt(1 * time.Second)
+
+	if p.verbosity >= 2 {
+		fmt.Fprintf(os.Stderr, "[DEBUG detectPythonBin] err=%v output=%q\n", err, output)
+	}
+
+	if strings.Contains(output, "ALCAPWN_PY3") {
+		p.usedPython = true
+		p.pythonBin = "python3"
+	} else if strings.Contains(output, "ALCAPWN_PY") {
+		p.usedPython = true
+		p.pythonBin = "python"
+	}
 }
 
 // reStripOSC strips OSC sequences (\x1b]...\x07 or \x1b]...\x1b\).

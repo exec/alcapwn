@@ -695,13 +695,10 @@ func (p *ReconParser) checkCVECandidates(f *Findings, sections map[string]string
 			})
 		}
 	} else if len(f.SudoNopasswd) > 0 {
-		// Generic NOPASSWD found (not the CVE-2019-14287 pattern)
-		cve := "CVE-2019-14287"
-		name := "Sudo NOPASSWD Configuration"
 		candidates = append(candidates, CveCandidate{
-			CVE:         cve,
-			Name:        name,
-			Description: "Sudo NOPASSWD rule found (not the CVE-2019-14287 pattern)",
+			CVE:         "SUDO-NOPASSWD",
+			Name:        "Sudo NOPASSWD Configuration",
+			Description: "User can run commands without a password — review sudoers for privilege escalation paths",
 			Severity:    "high",
 			Evidence:    fmt.Sprintf("NOPASSWD entries found: %d", len(f.SudoNopasswd)),
 			Confidence:  "high",
