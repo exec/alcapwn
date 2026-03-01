@@ -6,17 +6,7 @@ import (
 	"unicode/utf8"
 )
 
-const (
-	colorRed    = "\033[31m"
-	colorYellow = "\033[33m"
-	colorDim    = "\033[2m"
-	colorBold   = "\033[1m"
-	colorReset  = "\033[0m"
-)
-
 func printSummary(f *Findings, matches []MatchResult) {
-	// Check if stdout is a TTY before emitting color codes
-
 	// Extract identity info
 	hostname := "unknown"
 	if f.Hostname != nil {
@@ -119,8 +109,8 @@ func printSummary(f *Findings, matches []MatchResult) {
 	if len(f.SuidBinaries) > 0 {
 		fmt.Printf("\n SUID BINARIES: %d found\n", len(f.SuidBinaries))
 		for i, binary := range f.SuidBinaries {
-			if i >= 10 {
-				fmt.Printf("   ... and %d more\n", len(f.SuidBinaries)-10)
+			if i >= 5 {
+				fmt.Printf("   ... and %d more\n", len(f.SuidBinaries)-5)
 				break
 			}
 			fmt.Printf("   %s\n", binary)
@@ -142,7 +132,11 @@ func printSummary(f *Findings, matches []MatchResult) {
 	// Writable cron scripts
 	if len(f.WritableCrons) > 0 {
 		fmt.Printf("\n WRITABLE CRON SCRIPTS: %d\n", len(f.WritableCrons))
-		for _, path := range f.WritableCrons {
+		for i, path := range f.WritableCrons {
+			if i >= 5 {
+				fmt.Printf("   ... and %d more\n", len(f.WritableCrons)-5)
+				break
+			}
 			fmt.Printf("   %s\n", path)
 		}
 	}
@@ -152,6 +146,7 @@ func printSummary(f *Findings, matches []MatchResult) {
 		fmt.Printf("\n FILE CAPABILITIES: %d\n", len(f.Capabilities))
 		for i, cap := range f.Capabilities {
 			if i >= 5 {
+				fmt.Printf("   ... and %d more\n", len(f.Capabilities)-5)
 				break
 			}
 			fmt.Printf("   %s: %s\n", cap.File, cap.Capability)
@@ -163,6 +158,7 @@ func printSummary(f *Findings, matches []MatchResult) {
 		fmt.Printf("\n CVE CANDIDATES: %d\n", len(f.CveCandidates))
 		for i, cve := range f.CveCandidates {
 			if i >= 5 {
+				fmt.Printf("   ... and %d more\n", len(f.CveCandidates)-5)
 				break
 			}
 			fmt.Printf("   %s: %s (%s)\n", cve.CVE, cve.Name, cve.Confidence)
@@ -172,10 +168,15 @@ func printSummary(f *Findings, matches []MatchResult) {
 	// Tools available
 	if len(f.ToolsAvailable) > 0 {
 		tools := f.ToolsAvailable
+		extra := 0
 		if len(tools) > 10 {
+			extra = len(tools) - 10
 			tools = tools[:10]
 		}
 		fmt.Printf("\n AVAILABLE TOOLS: %s\n", strings.Join(tools, ", "))
+		if extra > 0 {
+			fmt.Printf("   ... and %d more\n", extra)
+		}
 	}
 
 	// Interesting files (non-SSH)

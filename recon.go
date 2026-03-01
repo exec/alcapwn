@@ -340,7 +340,7 @@ echo "============================================================"
 # Restore job control and clean up
 set -m
 rm -rf "$_T" 2>/dev/null
-unset _T _SUID_PID _SGID_PID _SSH_PID _WETC_PID
+unset _T _SUID_PID _SGID_PID _SSH_PID _WETC_PID _PWD_PID
 
 # Sentinel to mark the end of recon output
 echo "ALCAPWN_RECON_COMPLETE_7f3x9q"`
@@ -488,7 +488,7 @@ type PTY interface {
 // A per-session nonce is embedded in every section header echo in the script so that
 // fake headers injected by a hostile target (via env vars, file content, etc.) cannot
 // be mistaken for real section boundaries.
-func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, reconIdx int) (string, map[string]string, error) {
+func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, reconIdx int, timeout time.Duration, printer *consolePrinter) (string, map[string]string, error) {
 	nonce := makeReconNonce()
 	sectionRe := buildSectionRe(nonce)
 
@@ -501,7 +501,7 @@ func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, r
 	current := 0
 	disp.set(reconIdx, taskRunning, reconDetail(0, total, "starting"))
 
-	raw, err := u.readUntilSentinelProgress(sentinel, 15*time.Second, func(line string) {
+	raw, err := u.readUntilSentinelProgress(sentinel, timeout, func(line string) {
 		// Clean just enough for header detection; raw accumulation is unaffected.
 		clean := strings.TrimRight(stripANSI(strings.ReplaceAll(line, "\r", "")), "\n\r ")
 		if m := sectionRe.FindStringSubmatch(clean); m != nil {
@@ -524,17 +524,17 @@ func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, r
 
 	rawPath := ""
 	if findingsDir != "" {
-		rawPath = saveRawOutput(raw, findingsDir, host)
+		rawPath = saveRawOutput(raw, findingsDir, host, printer)
 	}
 
 	sections := extractAllSections(raw, sectionRe)
 	return rawPath, sections, nil
 }
 
-func saveRawOutput(output string, findingsDir string, host string) string {
+func saveRawOutput(output string, findingsDir string, host string, printer *consolePrinter) string {
 	// Create findings directory if needed
 	if err := os.MkdirAll(findingsDir, 0700); err != nil {
-		fmt.Printf("[!] Could not create findings directory: %v\n", err)
+		printer.Notify("[!] Could not create findings directory: %v", err)
 		return ""
 	}
 
@@ -553,7 +553,7 @@ func saveRawOutput(output string, findingsDir string, host string) string {
 	outpath := filepath.Join(findingsDir, filename)
 
 	if err := os.WriteFile(outpath, []byte(output), 0600); err != nil {
-		fmt.Printf("[!] Could not save raw output: %v\n", err)
+		printer.Notify("[!] Could not save raw output: %v", err)
 		return ""
 	}
 
