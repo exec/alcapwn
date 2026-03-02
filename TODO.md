@@ -143,6 +143,31 @@
 
 ---
 
+## Firewall Feature (High Priority - Elegant Design)
+
+### `firewall` Command
+**Why:** Control incoming connections, prevent self-DoS when shells reconnect
+- `firewall create <name>` - Create a named firewall
+- `firewall list` - List all firewalls
+- `firewall delete <name>` - Delete a firewall
+- `firewall rule <name> <allow|deny> <ip|cidr>` - Add rule
+- `firewall rules <name>` - List rules
+- `firewall clear <name>` - Clear all rules (deny all)
+- `firewall assign <name> <listener_addr>` - Assign firewall to listener
+
+**Design principles:**
+- Deny by default; only whitelisted IPs connect
+- Active session IPs are auto-whitelisted (prevents self-block)
+- Firewall applies at `accept()` time, before session creation
+- Listeners can operate without firewall (default: allow all)
+
+**Auto-behavior:**
+- When session opens: source IP auto-added to firewall's allow list
+- When session closes: source IP auto-removed (cleanup)
+- TLS reconnects: IP already whitelisted from original session
+
+---
+
 ## Architecture Improvements (Internal)
 
 ### 17. Drain Goroutine Race Condition
@@ -150,9 +175,12 @@
 **Issue:** The drain goroutine reads from `conn` while `interactWithSession` may also read. Need better coordination.
 **Risk:** Data loss or missed output when switching between background/interactive modes.
 
-### 18. Reconnection Logic
-**Issue:** When session dies, no automatic reconnection attempt.
-**Suggestion:** Add `--auto-reconnect` flag to respawn shells when connection drops.
+### 18. Config Command
+**Why:** NCL shells reconnect for ~15 minutes every 10 seconds by default; need configurable reconnect handling
+- `config set reconnect_timeout <seconds>` - How long to wait for reconnect
+- `config set max_reconnects <count>` - Max reconnection attempts
+- `config show` - Show current config
+- `config reset` - Reset to defaults
 
 ### 19. Listener Multiplexing
 **Issue:** One listener per port; can't have both TLS and plain on same port with different behavior.
