@@ -166,6 +166,10 @@
 - When session closes: source IP auto-removed (cleanup)
 - TLS reconnects: IP already whitelisted from original session
 
+**Storage:**
+- Firewalls persisted to `~/.alcapwn/firewalls.json`
+- Each firewall: `{name, rules: [{ip, cidr, action}], assigned_listeners: [addr]}`
+
 ---
 
 ## Architecture Improvements (Internal)
