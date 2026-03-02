@@ -46,7 +46,6 @@ func (p *consolePrinter) Notify(format string, args ...interface{}) {
 type listenerEntry struct {
 	ln           net.Listener
 	addr         string
-	tls          bool
 	sessionCount int32 // updated atomically
 }
 
@@ -517,7 +516,7 @@ func (c *Console) StartListener(addr string) {
 		fmt.Fprintf(os.Stderr, "[!] Failed to listen on %s: %v\n", addr, err)
 		return
 	}
-	entry := &listenerEntry{ln: ln, addr: addr, tls: c.opts.tlsEnabled}
+	entry := &listenerEntry{ln: ln, addr: addr}
 	if !c.listeners.add(addr, entry) {
 		ln.Close()
 		fmt.Printf("[!] Already listening on %s\n", addr)
@@ -724,19 +723,15 @@ func (c *Console) cmdListeners() {
 		fmt.Println("[*] No active listeners.")
 		return
 	}
-	fmt.Printf("  %-22s  %-6s  %s\n", "Address", "TLS", "Sessions")
-	fmt.Printf("  %-22s  %-6s  %s\n", strings.Repeat("─", 22), strings.Repeat("─", 6), strings.Repeat("─", 8))
+	fmt.Printf("  %-22s  %s\n", "Address", "Sessions")
+	fmt.Printf("  %-22s  %s\n", strings.Repeat("─", 22), strings.Repeat("─", 8))
 	for _, e := range entries {
-		tlsStr := "✗"
-		if e.tls {
-			tlsStr = "✓"
-		}
 		n := int(atomic.LoadInt32(&e.sessionCount))
 		noun := "sessions"
 		if n == 1 {
 			noun = "session"
 		}
-		fmt.Printf("  %-22s  %-6s  %d %s\n", e.addr, tlsStr, n, noun)
+		fmt.Printf("  %-22s  %d %s\n", e.addr, n, noun)
 	}
 }
 
@@ -1302,11 +1297,11 @@ func (c *Console) cmdReset(args []string) {
 	// setsid puts the new bash in its own session so it survives the parent
 	// shell closing (no SIGHUP propagation).
 	//
-	// If the listener has TLS enabled and Python was used for PTY upgrade,
+	// If TLS is enabled globally and Python was used for PTY upgrade,
 	// use the Python TLS relay so the new connection arrives encrypted.
 	// Cert verification is disabled via verify_mode=ssl.CERT_NONE.
 	var reconnectCmd string
-	if upgrader.UsedPython() && entry.tls {
+	if upgrader.UsedPython() && c.opts.tlsEnabled {
 		// Python TLS relay — fingerprint-pinned, identical to handleSession and
 		// cmdTLSUpgrade so all three TLS paths have the same MITM protection.
 		reconnectCmd = fmt.Sprintf(
