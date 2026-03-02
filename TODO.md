@@ -23,12 +23,12 @@
 - `persist remove <id> <entry_id>` - Remove persistence entry
 
 ### 3. Quick Command Execution
-**Why:** Recon takes 10-30 seconds; need quick checks without full recon
+**Why:** Even at 5 seconds, full recon is overkill for quick checks like `whoami` or `id`
 - `exec <id> <command>` - Run single command without triggering full recon
   - Returns raw output with minimal processing
   - No prompt stripping, no state changes
   - Example: `exec 1 whoami`, `exec 1 id`, `exec 1 cat /etc/passwd`
-- `exec -t <timeout> <id> <cmd>` - Timeout flag for quick checks
+- `exec -t <timeout> <id> <cmd>` - Timeout flag for long-running commands
 
 ### 4. Process Management
 **Why:** Need to see what's running, kill specific processes without killing shell
