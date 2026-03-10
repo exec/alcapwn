@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -32,11 +33,36 @@ type agentTaskReq struct {
 func handleAgentSession(sess *Session, opts sessionOpts) {
 	conn := sess.Conn
 
-	// ── Phase 1: Handshake ───────────────────────────────────────────────────
+	// ── Phase 1: Consume routing tag ─────────────────────────────────────────
+	// acceptLoop re-injected the 4-byte ALCA magic via prefixConn for routing
+	// detection.  Read and discard it here so the next bytes are the handshake.
+	var routingTag [4]byte
+	if _, err := io.ReadFull(conn, routingTag[:]); err != nil {
+		opts.printer.Notify("[!] [%d] Failed to read routing tag: %v", sess.ID, err)
+		conn.Close()
+		opts.registry.Remove(sess.ID)
+		return
+	}
 
-	env, err := proto.ReadMsg(conn)
+	// ── Phase 2: X25519 key exchange → AES-256-GCM session ───────────────────
+	if opts.serverKey == nil {
+		opts.printer.Notify("[!] [%d] No server key configured — rejecting agent", sess.ID)
+		conn.Close()
+		opts.registry.Remove(sess.ID)
+		return
+	}
+	cs, err := proto.NewServerCryptoSession(conn, opts.serverKey)
 	if err != nil {
-		opts.printer.Notify("[!] [%d] Agent handshake read failed: %v", sess.ID, err)
+		opts.printer.Notify("[!] [%d] Crypto handshake failed: %v", sess.ID, err)
+		conn.Close()
+		opts.registry.Remove(sess.ID)
+		return
+	}
+
+	// ── Phase 3: Encrypted Hello / Welcome ───────────────────────────────────
+	env, err := proto.ReadMsgEncrypted(conn, cs)
+	if err != nil {
+		opts.printer.Notify("[!] [%d] Agent hello read failed: %v", sess.ID, err)
 		conn.Close()
 		opts.registry.Remove(sess.ID)
 		return
@@ -55,7 +81,7 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 		return
 	}
 
-	if err := proto.WriteMsg(conn, proto.MsgWelcome, proto.Welcome{
+	if err := proto.WriteMsgEncrypted(conn, cs, proto.MsgWelcome, proto.Welcome{
 		SessionID: sess.ID,
 		Interval:  60,
 		Jitter:    20,
@@ -66,7 +92,7 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 		return
 	}
 
-	// ── Phase 2: Session setup ───────────────────────────────────────────────
+	// ── Session setup ────────────────────────────────────────────────────────
 
 	taskCh := make(chan agentTaskReq, 16)
 	sess.mu.Lock()
@@ -78,18 +104,19 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 	opts.printer.Notify("[+] Agent %d ready — %s  (%s/%s  uid=%s  mid=%s)",
 		sess.ID, hello.Hostname, hello.OS, hello.Arch, hello.UID, hello.MachineID)
 
-	// ── Phase 3: Bidirectional task dispatch ─────────────────────────────────
+	// ── Bidirectional task dispatch (encrypted) ───────────────────────────────
 
 	var pendingMu sync.Mutex
 	pending := make(map[string]chan proto.Result)
 
 	done := make(chan struct{})
 
-	// Read goroutine: handles Results coming back from the agent and replies to Pings.
+	// Read goroutine: decrypts Results and Pings; Pong via WriteMsgEncrypted
+	// (safe: CryptoSession.writeMu serialises concurrent writers).
 	go func() {
 		defer close(done)
 		for {
-			env, err := proto.ReadMsg(conn)
+			env, err := proto.ReadMsgEncrypted(conn, cs)
 			if err != nil {
 				return
 			}
@@ -110,12 +137,12 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 				}
 
 			case proto.MsgPing:
-				proto.WriteMsg(conn, proto.MsgPong, struct{}{}) //nolint:errcheck
+				proto.WriteMsgEncrypted(conn, cs, proto.MsgPong, struct{}{}) //nolint:errcheck
 			}
 		}
 	}()
 
-	// Write loop: drain the task channel and forward Tasks to the agent.
+	// Write loop: encrypt and forward Tasks to the agent.
 	for {
 		select {
 		case <-done:
@@ -135,7 +162,7 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 			pendingMu.Lock()
 			pending[req.task.ID] = req.resultCh
 			pendingMu.Unlock()
-			if err := proto.WriteMsg(conn, proto.MsgTask, req.task); err != nil {
+			if err := proto.WriteMsgEncrypted(conn, cs, proto.MsgTask, req.task); err != nil {
 				req.resultCh <- proto.Result{TaskID: req.task.ID, Error: err.Error()}
 				return
 			}
