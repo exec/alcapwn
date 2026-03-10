@@ -31,9 +31,12 @@ Everything below depends on this.~~
 
 ---
 
-## Phase 2 — Multi-Protocol Listeners
+## Phase 2 — Multi-Protocol Listeners ✓ (partial)
+Server-side HTTP listener + agent HTTP transport complete.
+WebSocket, DNS, ICMP listeners deferred to later.
 
-- [ ] HTTP/S listener (blend with web traffic; GET=poll, POST=result)
+- [x] HTTP listener (POST /register + GET|POST /beacon/{token})
+- [x] Per-session X25519+AES-256-GCM over HTTP bodies (same proto as TCP)
 - [ ] WebSocket listener (bypasses basic DPI, works through most HTTP proxies)
 - [ ] DNS beacon listener (TXT record polling; ultra-low-and-slow)
 - [ ] ICMP listener (fallback when all TCP/UDP is filtered)

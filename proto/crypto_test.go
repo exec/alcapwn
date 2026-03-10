@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/json"
@@ -646,6 +647,110 @@ func TestDeriveKeys_deterministicAndDistinct(t *testing.T) {
 	// Distinct keys.
 	if k1a == k2a {
 		t.Fatal("key1 and key2 are identical — direction independence broken")
+	}
+}
+
+// ── HTTP crypto variants ──────────────────────────────────────────────────────
+
+// TestHTTPCrypto_roundTrip verifies that NewServerCryptoSessionHTTP and
+// NewClientCryptoSessionHTTP produce matching sessions: messages encrypted by
+// the server can be decrypted by the client and vice-versa.
+func TestHTTPCrypto_roundTrip(t *testing.T) {
+	serverPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate server key: %v", err)
+	}
+	agentPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate agent key: %v", err)
+	}
+
+	// Server side: receives agent pub key from POST /register body.
+	serverCS, serverPubBytes, err := NewServerCryptoSessionHTTP(serverPriv, agentPriv.PublicKey().Bytes())
+	if err != nil {
+		t.Fatalf("NewServerCryptoSessionHTTP: %v", err)
+	}
+
+	// Client side: receives server pub key from POST /register response.
+	clientCS, err := NewClientCryptoSessionHTTP(agentPriv, serverPubBytes, "")
+	if err != nil {
+		t.Fatalf("NewClientCryptoSessionHTTP: %v", err)
+	}
+
+	// Server → client (server sends, client decrypts).
+	wantHello := Hello{Version: "v3", Hostname: "http-test"}
+	var serverBuf bytes.Buffer
+	if err := WriteMsgEncrypted(&serverBuf, serverCS, MsgHello, wantHello); err != nil {
+		t.Fatalf("server WriteMsgEncrypted Hello: %v", err)
+	}
+	env, err := ReadMsgEncrypted(&serverBuf, clientCS)
+	if err != nil {
+		t.Fatalf("client ReadMsgEncrypted Hello: %v", err)
+	}
+	if env.Type != MsgHello {
+		t.Fatalf("type: want %q got %q", MsgHello, env.Type)
+	}
+	var gotHello Hello
+	if err := json.Unmarshal(env.Data, &gotHello); err != nil {
+		t.Fatalf("unmarshal Hello: %v", err)
+	}
+	if gotHello != wantHello {
+		t.Fatalf("Hello mismatch: want %+v got %+v", wantHello, gotHello)
+	}
+
+	// Client → server (client sends, server decrypts).
+	wantResult := Result{TaskID: "t1", Output: []byte("uid=0(root)"), Exit: 0}
+	var clientBuf bytes.Buffer
+	if err := WriteMsgEncrypted(&clientBuf, clientCS, MsgResult, wantResult); err != nil {
+		t.Fatalf("client WriteMsgEncrypted Result: %v", err)
+	}
+	env2, err := ReadMsgEncrypted(&clientBuf, serverCS)
+	if err != nil {
+		t.Fatalf("server ReadMsgEncrypted Result: %v", err)
+	}
+	if env2.Type != MsgResult {
+		t.Fatalf("type: want %q got %q", MsgResult, env2.Type)
+	}
+	var gotResult Result
+	if err := json.Unmarshal(env2.Data, &gotResult); err != nil {
+		t.Fatalf("unmarshal Result: %v", err)
+	}
+	if gotResult.TaskID != wantResult.TaskID || string(gotResult.Output) != string(wantResult.Output) {
+		t.Fatalf("Result mismatch: want %+v got %+v", wantResult, gotResult)
+	}
+}
+
+// TestHTTPCrypto_fingerprint verifies that NewClientCryptoSessionHTTP rejects
+// a server public key whose SHA-256 fingerprint does not match the pinned value.
+func TestHTTPCrypto_fingerprint(t *testing.T) {
+	serverPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate server key: %v", err)
+	}
+	agentPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate agent key: %v", err)
+	}
+
+	_, serverPubBytes, err := NewServerCryptoSessionHTTP(serverPriv, agentPriv.PublicKey().Bytes())
+	if err != nil {
+		t.Fatalf("NewServerCryptoSessionHTTP: %v", err)
+	}
+
+	// Correct fingerprint passes.
+	correctFP := FingerprintKey(serverPubBytes)
+	if _, err := NewClientCryptoSessionHTTP(agentPriv, serverPubBytes, correctFP); err != nil {
+		t.Fatalf("expected success with correct fingerprint, got: %v", err)
+	}
+
+	// Wrong fingerprint is rejected.
+	wrongKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate wrong key: %v", err)
+	}
+	wrongFP := FingerprintKey(wrongKey.PublicKey().Bytes())
+	if _, err := NewClientCryptoSessionHTTP(agentPriv, serverPubBytes, wrongFP); err == nil {
+		t.Fatal("expected fingerprint mismatch error, got nil")
 	}
 }
 
