@@ -11,6 +11,9 @@ advanced post-exploitation, and OPSEC-aware infrastructure.
 ### Phase 1 — Agent/Server Split ✓ (commit d3bac6c)
 All items complete. See DEVELOPMENT_v3.md for design notes.
 
+### Phase 3 — Payload Generation ✓ (partial)
+Core generate command complete. Stage0/Stage1 stager deferred.
+
 ### Phase 4 — Encryption Hardening ✓ (partial)
 ECDH key agreement and certificate pinning complete. Rekeying and encrypted queue deferred.
 See DEVELOPMENT_v3.md for design notes.
@@ -47,14 +50,9 @@ WebSocket, DNS, ICMP listeners deferred to later.
 
 ## Phase 3 — Payload Generation
 
-- [ ] `generate` command: produce agent binary for target arch/OS
-  - `generate linux amd64 --lhost X --lport Y --format elf`
-  - `generate windows amd64 --lhost X --lport Y --format exe`
-  - `generate linux arm64 ...`
-  - `generate macos amd64 ...`
-- [ ] Shell one-liner output (`generate oneliner bash/ps1/python`)
-- [ ] Cross-compilation via `GOOS`/`GOARCH` in embedded build step
-- [ ] Templated stager: configurable LHOST/LPORT/interval injected at generate time
+- [x] `generate` command: produce agent binary for target arch/OS
+- [x] Cross-compilation via `GOOS`/`GOARCH` with `-ldflags` injection
+- [x] Shell one-liner output (`generate oneliner`)
 - [ ] Stage0 dropper: tiny payload (<5KB) that fetches and executes stage1 in memory
 - [ ] Stage1 loader: in-memory execution of stage2 without touching disk
 
