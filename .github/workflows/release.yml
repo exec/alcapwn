@@ -9,24 +9,35 @@ on:
 jobs:
   build:
     name: Build (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
         include:
-          - { name: alcapwn-linux-amd64,   goos: linux,   goarch: amd64 }
-          - { name: alcapwn-linux-arm64,   goos: linux,   goarch: arm64 }
-          - { name: alcapwn-macos-x86_64,  goos: darwin,  goarch: amd64 }
-          - { name: alcapwn-macos-aarch64, goos: darwin,  goarch: arm64 }
+          # Linux — CGO_ENABLED=0 produces fully static binaries (no glibc dep)
+          - { name: alcapwn-linux-amd64,   goos: linux,   goarch: amd64,  runner: ubuntu-latest }
+          - { name: alcapwn-linux-arm64,   goos: linux,   goarch: arm64,  runner: ubuntu-latest }
+          - { name: alcapwn-linux-armv7,   goos: linux,   goarch: arm,    goarm: "7", runner: ubuntu-latest }
+          - { name: alcapwn-linux-i386,    goos: linux,   goarch: 386,    runner: ubuntu-latest }
+          # BSDs — Go cross-compiles from Linux natively
+          - { name: alcapwn-freebsd-amd64, goos: freebsd, goarch: amd64,  runner: ubuntu-latest }
+          - { name: alcapwn-netbsd-amd64,  goos: netbsd,  goarch: amd64,  runner: ubuntu-latest }
+          # macOS — native runners for darwin targets
+          - { name: alcapwn-macos-x86_64,  goos: darwin,  goarch: amd64,  runner: macos-latest }
+          - { name: alcapwn-macos-aarch64, goos: darwin,  goarch: arm64,  runner: macos-latest }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24.4"
       - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
         run: |
           mkdir -p dist
-          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -ldflags "-s -w" -o dist/alcapwn .
+          go build -ldflags "-s -w" -o dist/alcapwn .
       - name: Package
         run: cd dist && tar -czf ${{ matrix.name }}.tar.gz alcapwn
       - uses: actions/upload-artifact@v4
@@ -59,6 +70,17 @@ jobs:
 
             ### Direct download
             Download the archive for your platform from the assets below, extract it, and place `alcapwn` somewhere on your `$PATH`.
+
+            | Platform | Architecture | File |
+            |----------|-------------|------|
+            | Linux    | x86_64      | `alcapwn-linux-amd64.tar.gz` |
+            | Linux    | arm64       | `alcapwn-linux-arm64.tar.gz` |
+            | Linux    | armv7       | `alcapwn-linux-armv7.tar.gz` |
+            | Linux    | i386        | `alcapwn-linux-i386.tar.gz` |
+            | FreeBSD  | x86_64      | `alcapwn-freebsd-amd64.tar.gz` |
+            | NetBSD   | x86_64      | `alcapwn-netbsd-amd64.tar.gz` |
+            | macOS    | Intel       | `alcapwn-macos-x86_64.tar.gz` |
+            | macOS    | Apple Silicon | `alcapwn-macos-aarch64.tar.gz` |
 
             ```sh
             tar -xzf alcapwn-<platform>-<arch>.tar.gz
