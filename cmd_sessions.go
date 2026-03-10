@@ -2270,6 +2270,11 @@ func (c *Console) cmdHelp() {
     exploit auto <id>               Try all non-interactive matches until root achieved
     broadcast <cmd>                 Send a command to all active sessions
 
+  PAYLOAD
+    generate list                   List supported build targets
+    generate <os> <arch> --lhost X  Cross-compile agent for target (requires Go toolchain)
+    generate oneliner <os> <arch>   Print shell/PS1 one-liner for deploy
+
   OPERATOR
     help                            Show this message
     exit                            Exit alcapwn (prompts if sessions are active)`)

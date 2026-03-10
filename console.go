@@ -748,6 +748,8 @@ func (c *Console) Run() {
 			c.cmdCreds(args)
 		case "exploit":
 			c.cmdExploit(args)
+		case "generate", "gen":
+			c.cmdGenerate(args)
 		case "broadcast":
 			c.cmdBroadcast(args)
 		case "rename":
