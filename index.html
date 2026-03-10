@@ -290,6 +290,11 @@
       gap: 12px;
     }
 
+    .roadmap-content {
+      flex: 1;
+      min-width: 0;
+    }
+
     .roadmap-item.tbd::before {
       content: '';
       width: 16px;
@@ -336,6 +341,10 @@
     .roadmap-title {
       font-weight: 500;
       color: var(--text);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
     }
 
     .roadmap-desc {
@@ -551,81 +560,78 @@ latest/download/alcapwn-linux-amd64</span> \
       <ul class="roadmap-list">
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Stub Generation</span>
-          <div>
+          <div class="roadmap-content">
             <span class="roadmap-title">Windows/ELF/ Mach-O stager generation</span>
             <div class="roadmap-desc">Generate reverse shell stubs for Windows (PowerShell, C#), Linux ELF, and macOS Mach-O binaries that auto-reconnect and support TLS.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Staging</span>
-          <span class="tag c2">C2</span>
-          <div>
-            <span class="roadmap-title">Multi-stage staging system</span>
+          <div class="roadmap-content">
+            <span class="roadmap-title">Multi-stage staging system <span class="tag c2">C2</span></span>
             <div class="roadmap-desc">Support stage0 (tiny payload) → stage1 (loader) → stage2 (full agent) with encryption and integrity verification between stages.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Callback Handling</span>
-          <span class="tag c2">C2</span>
-          <div>
-            <span class="roadmap-title">HTTP/S callback infrastructure</span>
+          <div class="roadmap-content">
+            <span class="roadmap-title">HTTP/S callback infrastructure <span class="tag c2">C2</span></span>
             <div class="roadmap-desc">Run HTTP servers on various ports for beacon-based callbacks, with routing based on User-Agent, path, and request headers.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Pivot Support</span>
-          <div>
+          <div class="roadmap-content">
             <span class="roadmap-title">TCP/HTTP/SOCKS5 proxy through sessions</span>
             <div class="roadmap-desc">Create pivot tunnels allowing the operator to access internal networks via established sessions as jump points.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Cryptography</span>
-          <div>
+          <div class="roadmap-content">
             <span class="roadmap-title">AES-256-GCM encrypted channels</span>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Obfuscation</span>
-          <div>
+          <div class="roadmap-content">
             <span class="roadmap-title">Command obfuscation and encoding</span>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Profile Support</span>
-          <span class="tag c2">C2</span>
-          <div>
-            <span class="roadmap-title">Malleable C2 profiles</span>
+          <div class="roadmap-content">
+            <span class="roadmap-title">Malleable C2 profiles <span class="tag c2">C2</span></span>
             <div class="roadmap-desc">Customize traffic patterns, endpoints, headers, and timing to mimic legitimate services and evade detection.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Deaddrop Upload</span>
-          <div>
+          <div class="roadmap-content">
             <span class="roadmap-title">Internet-facing file upload</span>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Keylogging</span>
-          <div>
+          <div class="roadmap-content">
             <span class="roadmap-title">Cross-platform keylogger module</span>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Screenshot Capture</span>
-          <div>
+          <div class="roadmap-content">
             <span class="roadmap-title">Headless screenshot module</span>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Webcam Capture</span>
-          <div>
+          <div class="roadmap-content">
             <span class="roadmap-title">Webcam snapshot capability</span>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Process Injection</span>
-          <div>
+          <div class="roadmap-content">
             <span class="roadmap-title">DLL/so injection and reflectve loading</span>
           </div>
         </li>
