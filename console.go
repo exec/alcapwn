@@ -18,6 +18,8 @@ import (
 
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
+
+	"alcapwn/proto"
 )
 
 // ── consolePrinter ────────────────────────────────────────────────────────────
@@ -599,12 +601,26 @@ func (c *Console) acceptLoop(ln net.Listener, entry *listenerEntry) {
 
 		var finalConn net.Conn = conn
 		isTLS := false
+		isAgent := false
 
-		if c.opts.tlsEnabled && c.opts.tlsCfg != nil {
-			buf := make([]byte, 1)
-			conn.Read(buf) //nolint:errcheck
-			if buf[0] == 0x16 {
-				tlsConn := tls.Server(&prefixConn{Conn: conn, prefix: buf}, c.opts.tlsCfg)
+		// Peek the first 4 bytes to identify the connection protocol:
+		//   'A','L','C','A' → alcapwn agent binary (proto.Magic)
+		//   0x16            → TLS ClientHello (when --tls is active)
+		//   anything else   → raw PTY / reverse shell
+		// The peeked bytes are re-injected via prefixConn so downstream
+		// readers (proto.ReadMsg, PTYUpgrader) see the full original stream.
+		{
+			peek := make([]byte, 4)
+			n, _ := io.ReadFull(conn, peek)
+			peek = peek[:n]
+
+			switch {
+			case proto.IsAgentHandshake(peek):
+				isAgent = true
+				finalConn = &prefixConn{Conn: conn, prefix: peek}
+
+			case n > 0 && peek[0] == 0x16 && c.opts.tlsEnabled && c.opts.tlsCfg != nil:
+				tlsConn := tls.Server(&prefixConn{Conn: conn, prefix: peek}, c.opts.tlsCfg)
 				if err := tlsConn.Handshake(); err != nil {
 					conn.Close()
 					c.printer.Notify("[!] TLS handshake failed from %s: %v", conn.RemoteAddr(), err)
@@ -612,8 +628,11 @@ func (c *Console) acceptLoop(ln net.Listener, entry *listenerEntry) {
 				}
 				finalConn = tlsConn
 				isTLS = true
-			} else {
-				finalConn = &prefixConn{Conn: conn, prefix: buf}
+
+			default:
+				if n > 0 {
+					finalConn = &prefixConn{Conn: conn, prefix: peek}
+				}
 			}
 		}
 
@@ -645,10 +664,17 @@ func (c *Console) acceptLoop(ln net.Listener, entry *listenerEntry) {
 		sessOpts.persist = c.persist
 		sessOpts.persistMu = &c.persistMu
 
-		go func(s *Session, o sessionOpts, e *listenerEntry) {
-			handleSession(s, o)
-			atomic.AddInt32(&e.sessionCount, -1)
-		}(sess, sessOpts, entry)
+		if isAgent {
+			go func(s *Session, o sessionOpts, e *listenerEntry) {
+				handleAgentSession(s, o)
+				atomic.AddInt32(&e.sessionCount, -1)
+			}(sess, sessOpts, entry)
+		} else {
+			go func(s *Session, o sessionOpts, e *listenerEntry) {
+				handleSession(s, o)
+				atomic.AddInt32(&e.sessionCount, -1)
+			}(sess, sessOpts, entry)
+		}
 	}
 }
 

