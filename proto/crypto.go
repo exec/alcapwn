@@ -135,6 +135,70 @@ func NewClientCryptoSession(rw io.ReadWriter, pinnedFingerprint string) (*Crypto
 	return newCryptoSession(sendKey, recvKey)
 }
 
+// ── HTTP transport variants ───────────────────────────────────────────────────
+//
+// For the HTTP beacon transport the agent sends its ephemeral public key in the
+// POST /register request body (agent-first), whereas the TCP transport has the
+// server send its key first.  The derived key material is identical; only the
+// call sequence differs.
+
+// NewServerCryptoSessionHTTP creates a CryptoSession for an HTTP-registered
+// agent.  agentPubBytes is taken from the POST /register request body.
+// Returns the CryptoSession and the server's raw public key bytes, which must
+// be sent back to the agent in the registration response so it can complete the
+// key exchange.
+func NewServerCryptoSessionHTTP(serverPriv *ecdh.PrivateKey, agentPubBytes []byte) (*CryptoSession, []byte, error) {
+	agentPub, err := ecdh.X25519().NewPublicKey(agentPubBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("crypto: parse agent pubkey: %w", err)
+	}
+	serverPub := serverPriv.PublicKey().Bytes()
+	shared, err := serverPriv.ECDH(agentPub)
+	if err != nil {
+		return nil, nil, fmt.Errorf("crypto: ECDH: %w", err)
+	}
+	// server sends on key₁, receives on key₂ — same direction mapping as TCP
+	sendKey, recvKey, err := deriveKeys(shared, serverPub, agentPubBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	cs, err := newCryptoSession(sendKey, recvKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cs, serverPub, nil
+}
+
+// NewClientCryptoSessionHTTP creates the agent-side CryptoSession after
+// receiving the server's public key from the POST /register response body.
+// agentPriv is the ephemeral key the agent generated for this session.
+// pinnedFingerprint is the optional SHA-256 hex of the server's long-term key
+// (embedded via -ldflags at build time); pass "" to skip verification.
+func NewClientCryptoSessionHTTP(agentPriv *ecdh.PrivateKey, serverPubBytes []byte, pinnedFingerprint string) (*CryptoSession, error) {
+	if pinnedFingerprint != "" {
+		got := fmt.Sprintf("%x", sha256.Sum256(serverPubBytes))
+		if got != pinnedFingerprint {
+			return nil, fmt.Errorf("crypto: fingerprint mismatch\n  want: %s\n   got: %s",
+				pinnedFingerprint, got)
+		}
+	}
+	serverPub, err := ecdh.X25519().NewPublicKey(serverPubBytes)
+	if err != nil {
+		return nil, fmt.Errorf("crypto: parse server pubkey: %w", err)
+	}
+	shared, err := agentPriv.ECDH(serverPub)
+	if err != nil {
+		return nil, fmt.Errorf("crypto: ECDH: %w", err)
+	}
+	agentPubBytes := agentPriv.PublicKey().Bytes()
+	// agent receives on key₁ (server→client), sends on key₂ (client→server)
+	recvKey, sendKey, err := deriveKeys(shared, serverPubBytes, agentPubBytes)
+	if err != nil {
+		return nil, err
+	}
+	return newCryptoSession(sendKey, recvKey)
+}
+
 // WriteMsgEncrypted marshals data as a proto Envelope of type t, encrypts it
 // with AES-256-GCM, and writes [4-byte ciphertext length][ciphertext] to w.
 // Safe for concurrent callers (serialised via cs.writeMu).

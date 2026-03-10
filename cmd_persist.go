@@ -409,7 +409,7 @@ WantedBy=multi-user.target" > /etc/systemd/system/alcapwn.service && systemctl e
 	sess.mu.Lock()
 	sessLabel := sess.Label
 	sess.mu.Unlock()
-	srcIP := hostFromAddr(sess.Conn.RemoteAddr())
+	srcIP := sess.remoteHost()
 	meta := c.persist.Sessions[id] // zero value if not present
 	meta.ID = id
 	meta.Persistent = true

@@ -2184,7 +2184,7 @@ func (c *Console) cmdRename(args []string) {
 	meta.ID = id
 	meta.Name = name
 	if meta.IP == "" {
-		meta.IP = hostFromAddr(sess.Conn.RemoteAddr())
+		meta.IP = sess.remoteHost()
 	}
 	if meta.Listener == "" {
 		meta.Listener = sess.ListenerAddr
