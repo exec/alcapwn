@@ -343,11 +343,35 @@ func incrementNonce(n *[12]byte) {
 
 // marshalEnvelope serialises data into a typed Envelope and returns the JSON bytes.
 // Shared by WriteMsg and WriteMsgEncrypted.
+// paddedEnvelope is the on-wire JSON struct for encrypted messages.
+// The _p field carries random padding so each ciphertext is a different length,
+// making traffic-analysis fingerprinting by size significantly harder.
+// Receivers unmarshal into the plain Envelope struct, which ignores _p.
+type paddedEnvelope struct {
+	Type MsgType         `json:"type"`
+	Data json.RawMessage `json:"data"`
+	Pad  string          `json:"_p,omitempty"` // random hex, stripped on decode
+}
+
 func marshalEnvelope(t MsgType, data any) ([]byte, error) {
 	payload, err := json.Marshal(data)
 	if err != nil {
 		return nil, err
 	}
-	env := Envelope{Type: t, Data: json.RawMessage(payload)}
-	return json.Marshal(env)
+	// Random 0–63 padding bytes expressed as hex.  The exact length is chosen
+	// uniformly at random so ciphertext sizes are not message-type predictable.
+	var padBuf [63]byte
+	var padLen [1]byte
+	if _, err := rand.Read(padLen[:]); err == nil {
+		n := int(padLen[0]) & 0x3f // 0–63
+		rand.Read(padBuf[:n])      //nolint:errcheck
+		env := paddedEnvelope{
+			Type: t,
+			Data: json.RawMessage(payload),
+			Pad:  fmt.Sprintf("%x", padBuf[:n]),
+		}
+		return json.Marshal(env)
+	}
+	// Fallback (rand unavailable): marshal without padding.
+	return json.Marshal(paddedEnvelope{Type: t, Data: json.RawMessage(payload)})
 }

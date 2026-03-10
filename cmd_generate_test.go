@@ -260,8 +260,8 @@ func TestParseGenerateArgs_basicLhost(t *testing.T) {
 	if opts.transport != "tcp" {
 		t.Errorf("transport=%q, want tcp", opts.transport)
 	}
-	if opts.lport != "4444" {
-		t.Errorf("lport=%q, want 4444", opts.lport)
+	if opts.lport != "443" {
+		t.Errorf("lport=%q, want 443", opts.lport)
 	}
 }
 
@@ -271,8 +271,8 @@ func TestParseGenerateArgs_httpDefaultPort(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
-	if opts.lport != "8080" {
-		t.Errorf("expected http default lport=8080, got %q", opts.lport)
+	if opts.lport != "443" {
+		t.Errorf("expected http default lport=443, got %q", opts.lport)
 	}
 }
 

