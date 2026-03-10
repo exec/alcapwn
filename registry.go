@@ -6,6 +6,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"alcapwn/proto"
 )
 
 // SessionState represents the lifecycle state of a session.
@@ -35,6 +37,11 @@ type Session struct {
 	State        SessionState
 	TLS          bool
 	mu           sync.Mutex
+	// Agent session fields — populated only when IsAgent is true.
+	// For PTY sessions these are always nil/false.
+	IsAgent     bool
+	AgentMeta   *proto.Hello      // set after agent handshake; guarded by mu
+	agentTaskCh chan agentTaskReq  // operator → handleAgentSession task channel
 	// drain goroutine control — guarded by mu.
 	// Non-nil only while a drain goroutine is running (session backgrounded).
 	drainStop chan struct{} // close to stop the drain goroutine
