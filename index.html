@@ -278,84 +278,49 @@
       list-style: none;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 8px;
     }
 
     .roadmap-item {
       background: var(--surface);
       border: 1px solid var(--border2);
+      border-left: 3px solid var(--border2);
       border-radius: 6px;
-      padding: 14px 16px;
-      display: flex;
-      align-items: flex-start;
-      gap: 12px;
+      padding: 12px 16px;
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 16px;
+      align-items: start;
     }
 
-    .roadmap-content {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .roadmap-content > * {
-      max-width: 500px;
-    }
-
-    .roadmap-item.tbd::before {
-      content: '';
-      width: 16px;
-      height: 16px;
-      border: 2px solid var(--muted);
-      border-radius: 50%;
-      flex-shrink: 0;
-      margin-top: 2px;
-    }
-
-    .roadmap-item.in-progress::before {
-      content: '';
-      width: 16px;
-      height: 16px;
-      border: 2px solid var(--green);
-      border-radius: 50%;
-      flex-shrink: 0;
-      margin-top: 2px;
-    }
-
-    .roadmap-item.completed::before {
-      content: '✓';
-      width: 16px;
-      height: 16px;
-      background: var(--green);
-      color: #fff;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.7rem;
-      flex-shrink: 0;
-      margin-top: 2px;
-    }
+    .roadmap-item.tbd   { border-left-color: var(--border2); }
+    .roadmap-item.in-progress { border-left-color: var(--green); }
+    .roadmap-item.completed   { border-left-color: var(--green); opacity: 0.6; }
 
     .roadmap-category {
-      font-size: 0.7rem;
+      font-size: 0.68rem;
       font-family: var(--mono);
       text-transform: uppercase;
+      letter-spacing: 0.08em;
       color: var(--muted);
-      margin-bottom: 4px;
+      padding-top: 2px;
     }
 
     .roadmap-title {
       font-weight: 500;
+      font-size: 0.9rem;
       color: var(--text);
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
+      gap: 6px;
       align-items: center;
     }
 
     .roadmap-desc {
       font-size: 0.82rem;
       color: var(--muted);
-      margin-top: 2px;
+      margin-top: 4px;
+      line-height: 1.5;
     }
 
     .tag {
@@ -565,79 +530,86 @@ latest/download/alcapwn-linux-amd64</span> \
       <ul class="roadmap-list">
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Stub Generation</span>
-          <div class="roadmap-content">
-            <span class="roadmap-title">Windows/ELF/ Mach-O stager generation</span>
-            <div class="roadmap-desc">Generate reverse shell stubs for Windows (PowerShell, C#), Linux ELF, and macOS Mach-O binaries that auto-reconnect and support TLS.</div>
+          <div>
+            <div class="roadmap-title">Windows / ELF / Mach-O stager generation</div>
+            <div class="roadmap-desc">Generate reverse shell stubs for Windows (PowerShell, C#), Linux ELF, and macOS Mach-O that auto-reconnect and support TLS.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Staging</span>
-          <div class="roadmap-content">
-            <span class="roadmap-title">Multi-stage staging system <span class="tag c2">C2</span></span>
-            <div class="roadmap-desc">Support stage0 (tiny payload) → stage1 (loader) → stage2 (full agent) with encryption and integrity verification between stages.</div>
+          <div>
+            <div class="roadmap-title">Multi-stage staging system <span class="tag c2">C2</span></div>
+            <div class="roadmap-desc">Stage0 (tiny dropper) → stage1 (loader) → stage2 (full agent), with encryption and integrity checks between stages.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
-          <span class="roadmap-category">Callback Handling</span>
-          <div class="roadmap-content">
-            <span class="roadmap-title">HTTP/S callback infrastructure <span class="tag c2">C2</span></span>
-            <div class="roadmap-desc">Run HTTP servers on various ports for beacon-based callbacks, with routing based on User-Agent, path, and request headers.</div>
+          <span class="roadmap-category">Callbacks</span>
+          <div>
+            <div class="roadmap-title">HTTP/S beacon infrastructure <span class="tag c2">C2</span></div>
+            <div class="roadmap-desc">HTTP listener with routing on User-Agent, path, and headers. Configurable check-in intervals and jitter.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
-          <span class="roadmap-category">Pivot Support</span>
-          <div class="roadmap-content">
-            <span class="roadmap-title">TCP/HTTP/SOCKS5 proxy through sessions</span>
-            <div class="roadmap-desc">Create pivot tunnels allowing the operator to access internal networks via established sessions as jump points.</div>
+          <span class="roadmap-category">Pivoting</span>
+          <div>
+            <div class="roadmap-title">TCP / HTTP / SOCKS5 proxy through sessions</div>
+            <div class="roadmap-desc">Route traffic through established sessions to reach otherwise inaccessible internal network segments.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Cryptography</span>
-          <div class="roadmap-content">
-            <span class="roadmap-title">AES-256-GCM encrypted channels</span>
+          <div>
+            <div class="roadmap-title">AES-256-GCM encrypted channels</div>
+            <div class="roadmap-desc">End-to-end encrypted comms independent of TLS, with ECDH key exchange and per-session keys.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Obfuscation</span>
-          <div class="roadmap-content">
-            <span class="roadmap-title">Command obfuscation and encoding</span>
+          <div>
+            <div class="roadmap-title">Payload obfuscation and encoding</div>
+            <div class="roadmap-desc">XOR / RC4 / base64 layered encoding, string encryption, and import table obfuscation for stubs.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
-          <span class="roadmap-category">Profile Support</span>
-          <div class="roadmap-content">
-            <span class="roadmap-title">Malleable C2 profiles <span class="tag c2">C2</span></span>
-            <div class="roadmap-desc">Customize traffic patterns, endpoints, headers, and timing to mimic legitimate services and evade detection.</div>
+          <span class="roadmap-category">Profiles</span>
+          <div>
+            <div class="roadmap-title">Malleable C2 profiles <span class="tag c2">C2</span></div>
+            <div class="roadmap-desc">Customize traffic patterns, URIs, headers, and timing to mimic legitimate services and blend into normal traffic.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
-          <span class="roadmap-category">Deaddrop Upload</span>
-          <div class="roadmap-content">
-            <span class="roadmap-title">Internet-facing file upload</span>
+          <span class="roadmap-category">Exfil</span>
+          <div>
+            <div class="roadmap-title">Chunked / async file exfiltration</div>
+            <div class="roadmap-desc">Background file transfers that survive disconnects, with integrity verification and optional compression.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Keylogging</span>
-          <div class="roadmap-content">
-            <span class="roadmap-title">Cross-platform keylogger module</span>
+          <div>
+            <div class="roadmap-title">Cross-platform keylogger module</div>
+            <div class="roadmap-desc">Capture keystrokes on Linux (X11/Wayland), macOS, and Windows with periodic flush to operator.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
-          <span class="roadmap-category">Screenshot Capture</span>
-          <div class="roadmap-content">
-            <span class="roadmap-title">Headless screenshot module</span>
+          <span class="roadmap-category">Screenshots</span>
+          <div>
+            <div class="roadmap-title">Headless screenshot capture</div>
+            <div class="roadmap-desc">Capture the current desktop without spawning a visible window; encode and exfil on demand.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
-          <span class="roadmap-category">Webcam Capture</span>
-          <div class="roadmap-content">
-            <span class="roadmap-title">Webcam snapshot capability</span>
+          <span class="roadmap-category">Proc Injection</span>
+          <div>
+            <div class="roadmap-title">DLL / .so injection and reflective loading</div>
+            <div class="roadmap-desc">Inject into running processes on Windows (CreateRemoteThread / reflective DLL) and Linux (ptrace / LD_PRELOAD).</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
-          <span class="roadmap-category">Process Injection</span>
-          <div class="roadmap-content">
-            <span class="roadmap-title">DLL/so injection and reflectve loading</span>
+          <span class="roadmap-category">Post-Exploit</span>
+          <div>
+            <div class="roadmap-title">Credential harvesting and LSASS dump</div>
+            <div class="roadmap-desc">Automated cred extraction from browser stores, SSH keys, .env files, and Windows LSASS on privilege.</div>
           </div>
         </li>
       </ul>
