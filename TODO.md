@@ -6,17 +6,28 @@ advanced post-exploitation, and OPSEC-aware infrastructure.
 
 ---
 
+## Completed
+
+### Phase 1 — Agent/Server Split ✓ (commit d3bac6c)
+All items complete. See DEVELOPMENT_v3.md for design notes.
+
+### Phase 4 — Encryption Hardening ✓ (partial)
+ECDH key agreement and certificate pinning complete. Rekeying and encrypted queue deferred.
+See DEVELOPMENT_v3.md for design notes.
+
+---
+
 ## Phase 1 — Agent / Server Split  (BLOCKING everything else)
 
-The entire codebase is currently server-side only. There is no agent binary.
-Everything below depends on this.
+~~The entire codebase is currently server-side only. There is no agent binary.
+Everything below depends on this.~~
 
-- [ ] Create `agent/` package: standalone Go binary (no CGo, static-linked)
-- [ ] Agent protocol: handshake → register session → receive task → send result
-- [ ] Wire existing server session registry to agent connections (not just PTY shells)
-- [ ] Agent auto-reconnect with configurable sleep interval + jitter
-- [ ] Replace raw TCP PTY assumptions with a proper task/result message envelope
-- [ ] Agent identifier: hardware fingerprint (machine-id + MAC) for reconnect auto-labeling
+- [x] Create `agent/` package: standalone Go binary (no CGo, static-linked)
+- [x] Agent protocol: handshake → register session → receive task → send result
+- [x] Wire existing server session registry to agent connections (not just PTY shells)
+- [x] Agent auto-reconnect with configurable sleep interval + jitter
+- [x] Replace raw TCP PTY assumptions with a proper task/result message envelope
+- [x] Agent identifier: hardware fingerprint (machine-id + MAC) for reconnect auto-labeling
 
 ---
 
@@ -50,11 +61,11 @@ Everything below depends on this.
 
 Current: optional TLS with ephemeral cert. No per-session symmetric keys.
 
-- [ ] ECDH (X25519) key agreement on first contact → per-session AES-256-GCM keys
-- [ ] Session rekeying at configurable intervals
-- [ ] Certificate pinning on agent side (embed server FP at generate time)
-- [ ] Encrypted command queue persisted to disk (survive server restart)
-- [ ] Payload encryption: XOR/AES stub wrapper for generated agents
+- [x] ECDH (X25519) key agreement on first contact → per-session AES-256-GCM keys — DONE
+- [x] Certificate pinning on agent side (embed server FP at generate time) — DONE (serverFingerprint ldflags var)
+- [ ] Session rekeying at configurable intervals — NOT YET (MsgRekey type defined but not auto-triggered; defer)
+- [ ] Encrypted command queue persisted to disk (survive server restart) — NOT YET (deferred; different concern)
+- [ ] Payload encryption: XOR/AES stub wrapper for generated agents — NOT YET (this is Phase 5)
 
 ---
 

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/ecdh"
+	"crypto/rand"
 	"encoding/json"
 	"net"
 	"os"
@@ -89,18 +91,41 @@ func newTestPrinter() *consolePrinter {
 	return &consolePrinter{console: c}
 }
 
+// newTestServerKey generates a fresh X25519 key for use in tests.
+func newTestServerKey(t *testing.T) *ecdh.PrivateKey {
+	t.Helper()
+	key, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test server key: %v", err)
+	}
+	return key
+}
+
 // ── handleAgentSession integration test ──────────────────────────────────────
 
-// mockAgent simulates an agent on one end of a net.Pipe():
-//  1. Sends Hello.
-//  2. Reads Welcome and verifies session ID.
-//  3. Reads Task and sends Result.
+// runMockAgent simulates an agent on one end of a net.Pipe():
+//  1. Performs client-side X25519 handshake (no pinning).
+//     NOTE: The routing tag is injected by the server-side prefixConn, so the
+//     agent does not write proto.Magic — the server reads it from the prefix.
+//  2. Sends Hello (encrypted).
+//  3. Reads Welcome (encrypted) and verifies session ID.
+//  4. Reads Task (encrypted) and sends Result (encrypted).
 //
 // Any protocol error causes the conn to be closed with t.Error logged.
 func runMockAgent(t *testing.T, conn net.Conn, expectedSessionID int, wantCommand string, resultOutput []byte) {
 	t.Helper()
 	defer conn.Close()
 
+	// Step 1: client-side crypto handshake (no fingerprint pinning in tests).
+	// The server reads the routing tag from its prefixConn, so the agent's
+	// first bytes on the wire are the crypto handshake (server pubkey read).
+	cs, err := proto.NewClientCryptoSession(conn, "")
+	if err != nil {
+		t.Errorf("mock agent: client crypto handshake: %v", err)
+		return
+	}
+
+	// Step 2: send Hello (encrypted).
 	hello := proto.Hello{
 		Version:   "1.0",
 		MachineID: "aabbccdd11223344",
@@ -110,14 +135,15 @@ func runMockAgent(t *testing.T, conn net.Conn, expectedSessionID int, wantComman
 		User:      "root",
 		UID:       "0",
 	}
-	if err := proto.WriteMsg(conn, proto.MsgHello, hello); err != nil {
-		t.Errorf("mock agent: WriteMsg Hello: %v", err)
+	if err := proto.WriteMsgEncrypted(conn, cs, proto.MsgHello, hello); err != nil {
+		t.Errorf("mock agent: WriteMsgEncrypted Hello: %v", err)
 		return
 	}
 
-	env, err := proto.ReadMsg(conn)
+	// Step 3: read Welcome (encrypted).
+	env, err := proto.ReadMsgEncrypted(conn, cs)
 	if err != nil {
-		t.Errorf("mock agent: ReadMsg Welcome: %v", err)
+		t.Errorf("mock agent: ReadMsgEncrypted Welcome: %v", err)
 		return
 	}
 	if env.Type != proto.MsgWelcome {
@@ -133,10 +159,10 @@ func runMockAgent(t *testing.T, conn net.Conn, expectedSessionID int, wantComman
 		t.Errorf("mock agent: welcome session_id: want %d got %d", expectedSessionID, welcome.SessionID)
 	}
 
-	// Read Task.
-	env, err = proto.ReadMsg(conn)
+	// Step 4a: read Task (encrypted).
+	env, err = proto.ReadMsgEncrypted(conn, cs)
 	if err != nil {
-		t.Errorf("mock agent: ReadMsg Task: %v", err)
+		t.Errorf("mock agent: ReadMsgEncrypted Task: %v", err)
 		return
 	}
 	if env.Type != proto.MsgTask {
@@ -152,31 +178,37 @@ func runMockAgent(t *testing.T, conn net.Conn, expectedSessionID int, wantComman
 		t.Errorf("mock agent: task command: want %q got %q", wantCommand, task.Command)
 	}
 
-	// Send Result.
+	// Step 4b: send Result (encrypted).
 	result := proto.Result{
 		TaskID: task.ID,
 		Output: resultOutput,
 		Exit:   0,
 	}
-	if err := proto.WriteMsg(conn, proto.MsgResult, result); err != nil {
-		t.Errorf("mock agent: WriteMsg Result: %v", err)
+	if err := proto.WriteMsgEncrypted(conn, cs, proto.MsgResult, result); err != nil {
+		t.Errorf("mock agent: WriteMsgEncrypted Result: %v", err)
 	}
 }
 
 func TestHandleAgentSession_execRoundTrip(t *testing.T) {
-	// server ↔ agent pipe
+	// server ↔ agent pipe.
+	// acceptLoop normally peeks 4 bytes and re-injects them via prefixConn.
+	// In the test we simulate the same by using prefixConn on the server side
+	// so handleAgentSession can consume the routing tag from the prefix while
+	// the agent's wire bytes start directly with the crypto handshake.
 	serverConn, agentConn := net.Pipe()
 
 	reg := NewRegistry()
-	sess := reg.Allocate(serverConn, false)
+	wrapped := &prefixConn{Conn: serverConn, prefix: proto.Magic[:]}
+	sess := reg.Allocate(wrapped, false)
 	if sess == nil {
 		t.Fatal("Allocate returned nil")
 	}
 
 	printer := newTestPrinter()
 	opts := sessionOpts{
-		printer:  printer,
-		registry: reg,
+		printer:   printer,
+		registry:  reg,
+		serverKey: newTestServerKey(t),
 	}
 
 	const command = "id"
@@ -237,33 +269,45 @@ func TestHandleAgentSession_disconnect(t *testing.T) {
 	serverConn, agentConn := net.Pipe()
 
 	reg := NewRegistry()
-	sess := reg.Allocate(serverConn, false)
+	wrapped := &prefixConn{Conn: serverConn, prefix: proto.Magic[:]}
+	sess := reg.Allocate(wrapped, false)
 	if sess == nil {
 		t.Fatal("Allocate returned nil")
 	}
 
 	printer := newTestPrinter()
+	testKey := newTestServerKey(t)
 	opts := sessionOpts{
-		printer:  printer,
-		registry: reg,
+		printer:   printer,
+		registry:  reg,
+		serverKey: testKey,
 	}
 
-	// Minimal agent: send Hello, read Welcome, then close without sending Result.
+	// Minimal agent: do handshake (server reads routing tag from prefixConn),
+	// send Hello, read Welcome, read the task so the write loop doesn't block,
+	// then close.
 	agentDone := make(chan struct{})
 	go func() {
 		defer close(agentDone)
 		defer agentConn.Close()
 
-		hello := proto.Hello{Version: "1.0", Hostname: "dc-test"}
-		if err := proto.WriteMsg(agentConn, proto.MsgHello, hello); err != nil {
+		// Client crypto handshake (server reads routing tag from prefixConn prefix).
+		cs, err := proto.NewClientCryptoSession(agentConn, "")
+		if err != nil {
 			return
 		}
-		env, err := proto.ReadMsg(agentConn)
+		// Send Hello.
+		hello := proto.Hello{Version: "1.0", Hostname: "dc-test"}
+		if err := proto.WriteMsgEncrypted(agentConn, cs, proto.MsgHello, hello); err != nil {
+			return
+		}
+		// Read Welcome.
+		env, err := proto.ReadMsgEncrypted(agentConn, cs)
 		if err != nil || env.Type != proto.MsgWelcome {
 			return
 		}
 		// Read the task so the write loop doesn't block.
-		proto.ReadMsg(agentConn) //nolint:errcheck
+		proto.ReadMsgEncrypted(agentConn, cs) //nolint:errcheck
 		// Disconnect immediately after receiving task (simulate crash).
 	}()
 
@@ -312,21 +356,29 @@ func TestHandleAgentSession_badHello(t *testing.T) {
 	serverConn, agentConn := net.Pipe()
 
 	reg := NewRegistry()
-	sess := reg.Allocate(serverConn, false)
+	wrapped := &prefixConn{Conn: serverConn, prefix: proto.Magic[:]}
+	sess := reg.Allocate(wrapped, false)
 	if sess == nil {
 		t.Fatal("Allocate returned nil")
 	}
 
 	printer := newTestPrinter()
+	testKey := newTestServerKey(t)
 	opts := sessionOpts{
-		printer:  printer,
-		registry: reg,
+		printer:   printer,
+		registry:  reg,
+		serverKey: testKey,
 	}
 
 	go func() {
 		defer agentConn.Close()
+		// Client crypto handshake (server reads routing tag from prefixConn prefix).
+		cs, err := proto.NewClientCryptoSession(agentConn, "")
+		if err != nil {
+			return
+		}
 		// Send a Ping instead of Hello — should be rejected.
-		proto.WriteMsg(agentConn, proto.MsgPing, struct{}{}) //nolint:errcheck
+		proto.WriteMsgEncrypted(agentConn, cs, proto.MsgPing, struct{}{}) //nolint:errcheck
 	}()
 
 	done := make(chan struct{})
@@ -344,5 +396,43 @@ func TestHandleAgentSession_badHello(t *testing.T) {
 	// Session should have been removed from the registry.
 	if reg.Get(sess.ID) != nil {
 		t.Error("session was not removed from registry after bad Hello")
+	}
+}
+
+// TestHandleAgentSession_noServerKey verifies that handleAgentSession rejects
+// the connection immediately when no server key is configured.
+func TestHandleAgentSession_noServerKey(t *testing.T) {
+	serverConn, agentConn := net.Pipe()
+	defer agentConn.Close()
+
+	reg := NewRegistry()
+	wrapped := &prefixConn{Conn: serverConn, prefix: proto.Magic[:]}
+	sess := reg.Allocate(wrapped, false)
+	if sess == nil {
+		t.Fatal("Allocate returned nil")
+	}
+
+	printer := newTestPrinter()
+	opts := sessionOpts{
+		printer:   printer,
+		registry:  reg,
+		serverKey: nil, // no key
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleAgentSession(sess, opts)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleAgentSession did not return after missing server key")
+	}
+
+	// Session should be gone.
+	if reg.Get(sess.ID) != nil {
+		t.Error("session was not removed from registry after missing server key")
 	}
 }

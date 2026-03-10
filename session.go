@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ecdh"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -34,6 +35,10 @@ type sessionOpts struct {
 	// instead of creating a new session — even if Python connects back before
 	// handleSession reaches its select.
 	registerTLSWaiter func(origIP string) (<-chan net.Conn, func())
+	// Agent session encryption — populated at startup from ~/.alcapwn/server_key.bin.
+	// nil means no agent encryption (should not happen in production).
+	serverKey         *ecdh.PrivateKey
+	serverFingerprint string // SHA-256(serverPubKey) lowercase hex; shown at startup
 	// Runtime dependencies injected by the console.
 	printer  *consolePrinter
 	registry *Registry

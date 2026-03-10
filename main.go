@@ -5,7 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"alcapwn/proto"
 )
 
 func printLogo() {
@@ -64,16 +67,29 @@ func main() {
 		fmt.Printf("    %s\n", fingerprint)
 	}
 
+	// Load (or generate) the server's long-term X25519 key used to encrypt
+	// agent connections.  The fingerprint is displayed so operators can embed
+	// it into agents at build time via -ldflags "-X main.serverFingerprint=...".
+	keyPath := filepath.Join(GetAlcapwnDir(), "server_key.bin")
+	serverKey, serverFP, err := proto.LoadOrCreateServerKey(keyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[!] Failed to load agent key: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("[*] Agent key fingerprint: %s\n", serverFP)
+
 	opts := sessionOpts{
-		verbosity:      *verbose,
-		autoRecon:      autoRecon,
-		findingsDir:    findingsDir,
-		rawDir:         rawDir,
-		timeout:        timeout,
-		tlsEnabled:     useTLS,
-		tlsCfg:         tlsCfg,
-		fingerprint:    fingerprint,
-		fingerprintHex: fingerprintHex,
+		verbosity:         *verbose,
+		autoRecon:         autoRecon,
+		findingsDir:       findingsDir,
+		rawDir:            rawDir,
+		timeout:           timeout,
+		tlsEnabled:        useTLS,
+		tlsCfg:            tlsCfg,
+		fingerprint:       fingerprint,
+		fingerprintHex:    fingerprintHex,
+		serverKey:         serverKey,
+		serverFingerprint: serverFP,
 	}
 
 	printLogo()
