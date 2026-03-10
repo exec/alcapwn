@@ -286,10 +286,18 @@
       border: 1px solid var(--border2);
       border-radius: 6px;
       padding: 14px 16px;
-      display: grid;
-      grid-template-columns: 90px 1fr;
+      display: flex;
+      align-items: flex-start;
       gap: 12px;
-      align-items: start;
+    }
+
+    .roadmap-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .roadmap-content > * {
+      max-width: 500px;
     }
 
     .roadmap-item.tbd::before {
