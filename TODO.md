@@ -1,205 +1,172 @@
-# alcapwn v2 TODO
+# alcapwn — C2 Evolution TODO
 
-## High Priority (Must-Have for NCL)
-
-### 1. File Transfer (Upload/Download)
-**Why:** Essential for NCL - uploading tools, downloading credentials
-- `download <id> <remote_path> [local_path]`
-  - If no local_path, save to current directory with hostname_timestamp prefix
-  - Support resuming large files
-- `upload <id> <local_path> [remote_path]`
-  - Detect if target is a directory
-  - Preserve file permissions where possible
-
-### 2. Persistence Installation
-**Why:** Shells die during NCL (reboots, network issues, manual cleanup). Need persistent access.
-- `persist <id> <method>` - Install persistence
-  - `cron` - Add to /etc/cron.d or user crontab (reboot)
-  - `bashrc` - Add to ~/.bashrc or ~/.bash_profile (new shells)
-  - `sshkey` - Add SSH public key to authorized_keys
-  - `systemd` - Create systemd service (reboot, if systemctl available)
-  - `setuid` - Set SUID bit on uploaded binary
-- `persist list <id>` - List existing persistence entries
-- `persist remove <id> <entry_id>` - Remove persistence entry
-
-### 3. Quick Command Execution
-**Why:** Even at 5 seconds, full recon is overkill for quick checks like `whoami` or `id`
-- `exec <id> <command>` - Run single command without triggering full recon
-  - Returns raw output with minimal processing
-  - No prompt stripping, no state changes
-  - Example: `exec 1 whoami`, `exec 1 id`, `exec 1 cat /etc/passwd`
-- `exec -t <timeout> <id> <cmd>` - Timeout flag for long-running commands
-
-### 4. Process Management
-**Why:** Need to see what's running, kill specific processes without killing shell
-- `ps <id>` - List processes (PID, user, %CPU, %MEM, command)
-- `killproc <id> <pid>` - Kill specific process (SIGTERM, then SIGKILL if needed)
-- `bgproc <id> <cmd>` - Run command in background with job tracking
-- `jobs <id>` - List background jobs
-- `bgoutput <id> <jobid>` - Get output from background job
+Current state: polished reverse-shell operator console for Linux CTF.
+Goal: full C2 framework with cross-platform agent, multi-protocol beaconing,
+advanced post-exploitation, and OPSEC-aware infrastructure.
 
 ---
 
-## Medium Priority (Very Useful)
+## Phase 1 — Agent / Server Split  (BLOCKING everything else)
 
-### 5. Session Filtering & Grouping
-**Why:** NCL boxes often have 20+ similar machines; need to manage them
-- `sessions --filter <keyword>` - Filter by:
-  - OS: `--filter ubuntu`, `--filter debian`, `--filter kali`
-  - Hostname: `--filter web`, `--filter db`
-  - IP: `--filter 192.168`
-  - CVE matches: `--filter cve`, `--filter high`, `--filter critical`
-- `sessions --group <field>` - Group by:
-  - `os` - Group by distro
-  - `container` - Docker vs bare metal
-  - `match_count` - High match count first
-  - `status` - Interactive vs backgrounded
-- `sessions --sort <field>` - Sort by:
-  - `uptime` - Most/least recent
-  - `match_count` - Most privesc options first
-  - `id` - Default, by session ID
+The entire codebase is currently server-side only. There is no agent binary.
+Everything below depends on this.
 
-### 6. Credential Harvesting Helper
-**Why:** You detect credentials but need to extract them
-- `creds <id>` - Quick credential check
-  - SSH keys in home dirs (id_rsa, id_ed25519, id_ecdsa)
-  - AWS credentials (~/.aws/credentials, /root/.aws/credentials)
-  - MySQL configs (~/.my.cnf, /root/.my.cnf, /etc/mysql/debian.cnf)
-  - Docker configs (config.json)
-  - Pip/Gem rc files
-- `dump shadow <id>` - Dump /etc/shadow (requires root)
-- `dump crontab <id>` - Dump all crontabs
-
-### 7. Filesystem Navigation Enhancements
-**Why:** Need to browse and examine files on target
-- `ls <id> <path>` - List directory contents
-- `cat <id> <path>` - View file contents (pager support)
-- `find <id> <path> <pattern>` - Find files by pattern
-- `md5 <id> <path>` - Get file MD5 hash
-- `stat <id> <path>` - Get file stat info
-- `head <id> <path> [lines]` - View first N lines
-- `tail <id> <path> [lines]` - View last N lines
-
-### 8. Export Improvements
-**Why:** Share findings with team, create reports
-- `export <id> --txt [path]` - Human-readable report
-- `export <id> --html [path]` - HTML summary for sharing
-- `export all --json [dir]` - Export all sessions' findings
+- [ ] Create `agent/` package: standalone Go binary (no CGo, static-linked)
+- [ ] Agent protocol: handshake → register session → receive task → send result
+- [ ] Wire existing server session registry to agent connections (not just PTY shells)
+- [ ] Agent auto-reconnect with configurable sleep interval + jitter
+- [ ] Replace raw TCP PTY assumptions with a proper task/result message envelope
+- [ ] Agent identifier: hardware fingerprint (machine-id + MAC) for reconnect auto-labeling
 
 ---
 
-## Lower Priority (Nice to Have)
+## Phase 2 — Multi-Protocol Listeners
 
-### 9. Shell Switching
-**Why:** Bash may be restricted, other shells may be available
-- `shell <id> <shell>` - Switch between available shells
-  - `shell 1 zsh` - Try switching to zsh
-  - `shell 1 sh` - Fallback to dash/sh
-  - Detect if shell exists first
-
-### 10. Port Forwarding
-**Why:** Pivot through compromised host to internal networks
-- `portforward <id> <local_port>:<remote_host>:<remote_port>`
-  - Create TCP forward through session
-  - Example: `portforward 1 8080:localhost:3306`
-- `portforwards <id>` - List active forwards
-- `portforward kill <id> <forward_id>` - Kill specific forward
-
-### 11. Auto-Exploitation Helper
-**Why:** Speed up exploitation of identified vectors
-- `suggest <id>` - Show top match + exact command from dataset
-- `exploit <id> <match_index>` - Run exploitation command directly
-- `exploit list <id>` - List all exploitable findings
-
-### 12. Session Notes/Tags
-**Why:** Track findings and next steps per session
-- `notes <id> <note>` - Attach freeform notes to session
-- `tags <id> <tag1> [tag2...]` - Tag sessions for grouping
-- `search <keyword>` - Find sessions by tag or note
-
-### 13. Network Discovery
-**Why:** Map internal network from compromised host
-- `scan <id> <target> <ports>` - Port scan from target (tcp connect)
-- `arp <id>` - Get ARP table
-- `routes <id>` - Get routing table
-- `hosts <id>` - Check /etc/hosts
-
-### 14. Heartbeat/Monitoring
-**Why:** Check if backgrounded sessions are still alive
-- `heartbeat <id>` - Send simple command, check response
-- `heartbeat all` - Check all backgrounded sessions
-- `watch <id>` - Start periodic heartbeat with notifications
-
-### 15. Browser Interaction
-**Why:** NCL often has web app attacks
-- `history <id>` - Get browser history (if present)
-- `cookies <id>` - Dump browser cookies
-- `screenshot <id>` - Take screenshot (if x11 forwarding available)
-
-### 16. Lateral Movement Aids
-**Why:** Spread after gaining initial access
-- `spray <cmd>` - Run command across all sessions (shared credentials)
-- `forward <id> <target:port>` - Forward connections through session
+- [ ] HTTP/S listener (blend with web traffic; GET=poll, POST=result)
+- [ ] WebSocket listener (bypasses basic DPI, works through most HTTP proxies)
+- [ ] DNS beacon listener (TXT record polling; ultra-low-and-slow)
+- [ ] ICMP listener (fallback when all TCP/UDP is filtered)
+- [ ] Listener multiplexer: route to correct session handler by protocol
+- [ ] Per-listener protocol config (beacon interval, jitter, max chunk size)
 
 ---
 
-## Firewall Feature (High Priority - Elegant Design)
+## Phase 3 — Payload Generation
 
-### `firewall` Command
-**Why:** Control incoming connections, prevent self-DoS when shells reconnect
-- `firewall create <name>` - Create a named firewall
-- `firewall list` - List all firewalls
-- `firewall delete <name>` - Delete a firewall
-- `firewall rule <name> <allow|deny> <ip|cidr>` - Add rule
-- `firewall rules <name>` - List rules
-- `firewall clear <name>` - Clear all rules (deny all)
-- `firewall assign <name> <listener_addr>` - Assign firewall to listener
-
-**Design principles:**
-- Deny by default; only whitelisted IPs connect
-- Active session IPs are auto-whitelisted (prevents self-block)
-- Firewall applies at `accept()` time, before session creation
-- Listeners can operate without firewall (default: allow all)
-
-**Auto-behavior:**
-- When session opens: source IP auto-added to firewall's allow list
-- When session closes: source IP auto-removed (cleanup)
-- TLS reconnects: IP already whitelisted from original session
-
-**Storage:**
-- Firewalls persisted to `~/.alcapwn/firewalls.json`
-- Each firewall: `{name, rules: [{ip, cidr, action}], assigned_listeners: [addr]}`
+- [ ] `generate` command: produce agent binary for target arch/OS
+  - `generate linux amd64 --lhost X --lport Y --format elf`
+  - `generate windows amd64 --lhost X --lport Y --format exe`
+  - `generate linux arm64 ...`
+  - `generate macos amd64 ...`
+- [ ] Shell one-liner output (`generate oneliner bash/ps1/python`)
+- [ ] Cross-compilation via `GOOS`/`GOARCH` in embedded build step
+- [ ] Templated stager: configurable LHOST/LPORT/interval injected at generate time
+- [ ] Stage0 dropper: tiny payload (<5KB) that fetches and executes stage1 in memory
+- [ ] Stage1 loader: in-memory execution of stage2 without touching disk
 
 ---
 
-## Architecture Improvements (Internal)
+## Phase 4 — Encryption Hardening
 
-### 17. Drain Goroutine Race Condition
-**File:** `console.go` - `startDrain()`
-**Issue:** The drain goroutine reads from `conn` while `interactWithSession` may also read. Need better coordination.
-**Risk:** Data loss or missed output when switching between background/interactive modes.
+Current: optional TLS with ephemeral cert. No per-session symmetric keys.
 
-### 18. Config Command
-**Why:** NCL shells reconnect for ~15 minutes every 10 seconds by default; need configurable reconnect handling
-- `config set reconnect_timeout <seconds>` - How long to wait for reconnect
-- `config set max_reconnects <count>` - Max reconnection attempts
-- `config show` - Show current config
-- `config reset` - Reset to defaults
-
-### 19. Listener Multiplexing
-**Issue:** One listener per port; can't have both TLS and plain on same port with different behavior.
-**Current:** Auto-detection works via byte peeking, which is fine.
-**Consider:** Explicit `--plain` vs `--tls` listener modes if needed.
+- [ ] ECDH (X25519) key agreement on first contact → per-session AES-256-GCM keys
+- [ ] Session rekeying at configurable intervals
+- [ ] Certificate pinning on agent side (embed server FP at generate time)
+- [ ] Encrypted command queue persisted to disk (survive server restart)
+- [ ] Payload encryption: XOR/AES stub wrapper for generated agents
 
 ---
 
-## Out of Scope
+## Phase 5 — Obfuscation & OPSEC
 
-### Windows Support
-**Why:** NCL is Linux-focused; keep tool simple.
+- [ ] Payload string encryption (RC4/XOR keys embedded, decrypt at runtime)
+- [ ] Import table obfuscation (Go: use `//go:linkname` tricks or syscall wrappers)
+- [ ] Configurable beacon jitter (e.g. ±20% of interval)
+- [ ] Traffic blending: normalize HTTP headers/URIs to mimic a known service
+- [ ] Malleable profiles (`profile create browser --user-agent "..." --beacon 60s`)
+- [ ] Chunked/randomized packet sizes to defeat size-based fingerprinting
+- [ ] Proxy-aware agent: read system proxy (HTTP_PROXY / WinHTTP) and use it
 
-### encrypted payload execution
-**Why:** AV evasion is beyond NCL scope; use base64 encoding if needed.
+---
 
-### C2 infrastructure (beaconing, command queue, etc.)
-**Why:** This is a CTF tool, not a production C2. Keep it simple.
+## Phase 6 — Pivoting & Lateral Movement
+
+- [ ] SOCKS5 proxy through session (`pivot <id> --socks5 :1080`)
+- [ ] TCP port forward through session (`pivot <id> --fwd 8080:192.168.1.10:80`)
+- [ ] Reverse port forward (agent opens inbound, server side gets remote service)
+- [ ] Chain pivots: route pivot traffic through another session
+- [ ] Basic network scan from target: ping sweep + SYN scan on common ports
+  (avoid nmap dep; implement in agent using raw sockets or Go net)
+
+---
+
+## Phase 7 — Windows Support
+
+- [ ] Windows agent: compile with `GOOS=windows`
+- [ ] Windows recon section in `recon.go` (or separate `recon_windows.go`):
+  - `whoami /priv` token privileges
+  - `net localgroup administrators`
+  - Unquoted service paths
+  - AlwaysInstallElevated registry check
+  - Weak service ACLs (`sc qc` + `icacls`)
+  - Scheduled task enumeration
+  - Credential store detection (SAM, Credential Manager, DPAPI blobs)
+  - Running processes with `tasklist /svc`
+- [ ] Windows dataset entries for exploit matcher (PrintSpoofer, SeImpersonate, etc.)
+- [ ] Windows-specific persistence: registry Run keys, scheduled tasks, service install
+- [ ] Upload/download without Python dependency (agent handles it natively)
+
+---
+
+## Phase 8 — Post-Exploitation Modules
+
+These run inside the agent on the target, results returned to operator.
+
+- [ ] **Credential harvesting**:
+  - Linux: `/etc/shadow`, SSH keys, `.env`, bash history, git credentials, AWS/GCP configs
+  - Windows: DPAPI blob extraction, browser stores (Chrome/Firefox), WinCred, SAM dump
+  - Auto-trigger on privilege gain (post `exploit auto` success)
+- [ ] **Keylogger** (`module keylog start <id>`):
+  - Linux: X11 (`XQueryKeymap`), Wayland (`libinput` evdev `/dev/input`)
+  - Windows: `SetWindowsHookEx(WH_KEYBOARD_LL)`
+  - Buffer flush to operator on demand or interval
+- [ ] **Screenshot** (`module screenshot <id>`):
+  - Linux: X11 `XGetImage`, Wayland fallback (`grim` if available)
+  - Windows: `BitBlt` GDI capture
+  - Encode PNG, stream to operator
+- [ ] **Process injection** (`module inject <id> --pid <pid> --payload <file>`):
+  - Linux: `ptrace` + shellcode write, or `LD_PRELOAD` `.so` injection
+  - Windows: `VirtualAllocEx` + `WriteProcessMemory` + `CreateRemoteThread`
+- [ ] **LSASS dump** (Windows; privilege required):
+  - `MiniDumpWriteDump` via own process or via comsvcs.dll
+  - Transfer dump to operator for offline parsing (pass the hash / cracking)
+
+---
+
+## Phase 9 — Async File Transfer
+
+Current: blocking `download`/`upload` commands — connection holds until done.
+
+- [ ] Background file transfer with progress bar in operator console
+- [ ] Chunked transfer with resume (file offset tracking)
+- [ ] Transfer queue per session (multiple files queued)
+- [ ] Integrity check on completion (SHA-256)
+- [ ] Optional compression (gzip before base64/encrypt)
+- [ ] Bandwidth throttle option (`--bw 512k`)
+
+---
+
+## Phase 10 — Multi-Operator / Teamserver
+
+Nice to have; probably not needed for NCL but architecturally correct.
+
+- [ ] Teamserver mode: bind a management port, accept operator connections (mTLS)
+- [ ] Operator authentication (shared secret or per-operator certs)
+- [ ] Session ownership: sessions assigned to operator, or shared
+- [ ] Shared event log: all operators see session connections, command results
+- [ ] Operator chat (simple broadcast)
+- [ ] Command audit log (sqlite): every command issued, by whom, timestamp, result
+
+---
+
+## Existing Bugs / Known Limitations
+
+- [ ] `exec <id>` — no timeout handling; hangs on commands with no output terminator
+- [ ] `ps <id>` — output is raw; no structured parsing (PID/name/user columns)
+- [ ] `broadcast` — sends a message to sessions' notes, not an actual command; wire to `exec`
+- [ ] `creds <id>` — manual entry only; hook into auto-harvest post-exploit
+- [ ] Interactive filter in `console.go` — stateful ANSI parser may miss fragmented sequences
+- [ ] Drain goroutine coordination — `stopDrain` has a small race on rapid re-use
+- [ ] macOS recon — OS type detected but no macOS-specific priv-esc checks
+- [ ] Recon parser regexes — brittle against non-standard version string formats
+
+---
+
+## Out of Scope (for now)
+
+- Kernel rootkit / firmware persistence
+- Hardware implants
+- Browser extension implants
+- Cloud provider metadata API abuse (AWS IMDSv2, GCP, Azure)
+- Active Directory attacks (Kerberoasting, AS-REP roasting) — too infra-specific
