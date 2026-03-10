@@ -448,12 +448,13 @@ func (e *lineEditor) readLine(prompt string) (string, error) {
 // Console is the operator shell.  It owns the listener registry and dispatches
 // all interactive commands.
 type Console struct {
-	registry  *Registry
-	listeners *listenerRegistry
-	opts      sessionOpts
-	printer   *consolePrinter
-	state     consoleState
-	editor    *lineEditor
+	registry      *Registry
+	listeners     *listenerRegistry
+	httpListeners *httpListenerRegistry
+	opts          sessionOpts
+	printer       *consolePrinter
+	state         consoleState
+	editor        *lineEditor
 
 	// pendingTLSUpgrade maps source IP → channel for in-flight manual TLS
 	// upgrades.  acceptLoop checks this before allocating a new session so the
@@ -478,6 +479,7 @@ func NewConsole(registry *Registry, opts sessionOpts) *Console {
 	c := &Console{
 		registry:          registry,
 		listeners:         newListenerRegistry(),
+		httpListeners:     newHTTPListenerRegistry(),
 		opts:              opts,
 		pendingTLSUpgrade: make(map[string]chan net.Conn),
 		editor:            newLineEditor(int(os.Stdin.Fd())),

@@ -55,9 +55,10 @@ type Hello struct {
 
 // Welcome is sent by the server in response to Hello.
 type Welcome struct {
-	SessionID int `json:"session_id"`
-	Interval  int `json:"interval"` // suggested keep-alive / reconnect interval (s)
-	Jitter    int `json:"jitter"`   // jitter percentage (0–50)
+	SessionID int    `json:"session_id"`
+	Interval  int    `json:"interval"`        // suggested keep-alive / reconnect interval (s)
+	Jitter    int    `json:"jitter"`          // jitter percentage (0–50)
+	Token     string `json:"token,omitempty"` // HTTP beacon token; empty for TCP sessions
 }
 
 // TaskKind classifies what the agent should do.

