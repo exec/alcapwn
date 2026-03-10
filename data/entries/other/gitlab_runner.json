@@ -1,0 +1,1 @@
+{"id":"gitlab_runner_token","category":"OTHER","binary":"gitlab-runner","cve":null,"exploitation":["cat /etc/gitlab-runner/config.toml"],"source":"generic","tags":["gitlab","ci-cd"],"severity":"high"}

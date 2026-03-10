@@ -1,0 +1,1 @@
+{"id":"docker_compose_secrets","category":"OTHER","binary":"docker-compose","cve":null,"exploitation":["cat docker-compose.yml | grep -iE 'password|secret|token'"],"source":"generic","tags":["compose","docker"],"severity":"medium"}

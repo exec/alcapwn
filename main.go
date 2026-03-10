@@ -22,16 +22,15 @@ func main() {
 	listen := flag.String("l", "", "Listen address HOST:PORT (optional; use 'listen' command otherwise)")
 	verbose := flag.Int("v", 0, "Verbosity (use -v=1 or -v=2)")
 
-	var noRecon bool
-	flag.BoolVar(&noRecon, "n", false, "Skip recon — drop straight to interactive shell")
-	flag.BoolVar(&noRecon, "no-recon", false, "Skip recon — drop straight to interactive shell")
+	var autoRecon bool
+	flag.BoolVar(&autoRecon, "r", false, "Run automated recon on every new session")
+	flag.BoolVar(&autoRecon, "recon", false, "Run automated recon on every new session")
 
 	var findingsDir string
 	flag.StringVar(&findingsDir, "o", "", "Save findings JSON to DIR (off by default)")
 	flag.StringVar(&findingsDir, "output", "", "Save findings JSON to DIR (off by default)")
 
 	var rawDir string
-	flag.StringVar(&rawDir, "r", "", "Save raw terminal capture to DIR (off by default)")
 	flag.StringVar(&rawDir, "raw", "", "Save raw terminal capture to DIR (off by default)")
 
 	var timeout int
@@ -67,7 +66,7 @@ func main() {
 
 	opts := sessionOpts{
 		verbosity:      *verbose,
-		noRecon:        noRecon,
+		autoRecon:      autoRecon,
 		findingsDir:    findingsDir,
 		rawDir:         rawDir,
 		timeout:        timeout,
@@ -81,6 +80,18 @@ func main() {
 
 	registry := NewRegistry()
 	console := NewConsole(registry, opts)
+
+	// Load persistence store and auto-start persistent listeners
+	if console.config.AutoOpenListeners {
+		console.persistMu.Lock()
+		for addr, cfg := range console.persist.Listeners {
+			if cfg.Persistent && cfg.AutoOpen {
+				fmt.Printf("[*] Auto-starting persistent listener on %s\n", addr)
+				console.StartListener(addr)
+			}
+		}
+		console.persistMu.Unlock()
+	}
 
 	if *listen != "" {
 		console.StartListener(*listen)

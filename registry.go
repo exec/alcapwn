@@ -26,9 +26,12 @@ type Session struct {
 	RemoteAddr   string
 	ListenerAddr string // address of the listener this session came through
 	Label        string // optional human-readable name set with 'rename'
-	Findings     *Findings
-	Matches      []MatchResult
-	StartTime    time.Time
+	Findings        *Findings
+	Matches         []MatchResult
+	HarvestedCreds  *string // set by 'creds' command; shown in 'info'
+	IsRoot          bool    // current privilege state — updated live, distinct from Findings.UID snapshot
+	RootLevel       string  // "uid", "euid", or "both"; empty when not root
+	StartTime       time.Time
 	State        SessionState
 	TLS          bool
 	mu           sync.Mutex

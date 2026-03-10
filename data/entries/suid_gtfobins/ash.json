@@ -1,0 +1,11 @@
+{
+  "id": "suid_ash",
+  "category": "SUID_GTFOBINS",
+  "binary": "ash",
+  "cve": null,
+  "exploitation": ["{{binary}} -p"],
+  "post_exploit": ["id"],
+  "source": "gtfobins.github.io",
+  "tags": ["suid", "gtfobins"],
+  "severity": "high"
+}

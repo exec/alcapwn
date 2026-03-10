@@ -1,16 +1,20 @@
 package main
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"sync"
-
-	_ "embed"
 )
 
-//go:embed data/privesc_dataset.json
-var datasetJSON []byte
+// Each file under data/entries/**/*.json is a single DatasetEntry object.
+// Subdirectory names are cosmetic (suid_gtfobins/, sudo_nopasswd/, etc.) and
+// do not affect parsing — category comes from the entry's "category" field.
+//
+//go:embed data/entries
+var entriesFS embed.FS
 
 var (
 	datasetOnce    sync.Once
@@ -19,11 +23,26 @@ var (
 
 func getDataset() []DatasetEntry {
 	datasetOnce.Do(func() {
-		var ds Dataset
-		if err := json.Unmarshal(datasetJSON, &ds); err != nil {
-			panic("failed to parse embedded dataset: " + err.Error())
+		var entries []DatasetEntry
+		err := fs.WalkDir(entriesFS, "data/entries", func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || filepath.Ext(path) != ".json" {
+				return err
+			}
+			data, err := entriesFS.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("read %s: %w", path, err)
+			}
+			var entry DatasetEntry
+			if err := json.Unmarshal(data, &entry); err != nil {
+				return fmt.Errorf("parse %s: %w", path, err)
+			}
+			entries = append(entries, entry)
+			return nil
+		})
+		if err != nil {
+			panic("failed to load dataset entries: " + err.Error())
 		}
-		datasetEntries = ds.Entries
+		datasetEntries = entries
 	})
 	return datasetEntries
 }
@@ -46,11 +65,12 @@ func pathsMatch(path1, path2 string) bool {
 	return path1 == path2
 }
 
-func createMatch(entry DatasetEntry, confidence, reason string) MatchResult {
+func createMatch(entry DatasetEntry, confidence, reason, binaryPath string) MatchResult {
 	result := MatchResult{
-		Entry:           entry,
-		MatchConfidence: confidence,
-		MatchReason:     reason,
+		Entry:             entry,
+		MatchConfidence:   confidence,
+		MatchReason:       reason,
+		MatchedBinaryPath: binaryPath,
 	}
 	if entry.Severity == nil {
 		sev := "high"
@@ -94,7 +114,7 @@ func matchFindings(f *Findings) []MatchResult {
 		if hasNegatedRoot {
 			for _, entry := range sudoRuleCVE {
 				if entry.CVE != nil && *entry.CVE == "CVE-2019-14287" {
-					matches = append(matches, createMatch(entry, "high", "Found (ALL, !root) sudo rule with sudo -u#-1 bypass"))
+					matches = append(matches, createMatch(entry, "high", "Found (ALL, !root) sudo rule with sudo -u#-1 bypass", "sudo"))
 					matchedPaths["cve-2019-14287"] = true
 					break
 				}
@@ -112,7 +132,7 @@ func matchFindings(f *Findings) []MatchResult {
 			for _, sudoEntry := range f.SudoNopasswd {
 				cmd := sudoEntry.Command
 				if pathsMatch(cmd, *entryBinary) {
-					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("Constrained NOPASSWD: %s matches SUDO_NOPASSWD_CUSTOM", cmd)))
+					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("Constrained NOPASSWD: %s matches SUDO_NOPASSWD_CUSTOM", cmd), cmd))
 					matchedPaths[fmt.Sprintf("custom-%s", cmd)] = true
 					break
 				}
@@ -131,7 +151,7 @@ func matchFindings(f *Findings) []MatchResult {
 		}
 		if hasAll {
 			for _, entry := range sudoNOPASSWDDirect {
-				matches = append(matches, createMatch(entry, "high", "NOPASSWD: ALL rule found"))
+				matches = append(matches, createMatch(entry, "high", "NOPASSWD: ALL rule found", ""))
 				matchedPaths["nopasswd-all"] = true
 				break
 			}
@@ -147,7 +167,7 @@ func matchFindings(f *Findings) []MatchResult {
 			}
 			for _, suidBinary := range f.SuidBinaries {
 				if pathsMatch(suidBinary, *entryBinary) {
-					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("SUID binary %s matches GTFOBins entry", suidBinary)))
+					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("SUID binary %s matches GTFOBins entry", suidBinary), suidBinary))
 					matchedPaths[fmt.Sprintf("suid-%s", *entryBinary)] = true
 					break
 				}
@@ -164,7 +184,7 @@ func matchFindings(f *Findings) []MatchResult {
 			}
 			for _, suidBinary := range f.SuidBinaries {
 				if pathsMatch(suidBinary, *entryBinary) {
-					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("SUID binary %s matches custom SUID entry", suidBinary)))
+					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("SUID binary %s matches custom SUID entry", suidBinary), suidBinary))
 					matchedPaths[fmt.Sprintf("suid-custom-%s", *entryBinary)] = true
 					break
 				}
@@ -186,7 +206,7 @@ func matchFindings(f *Findings) []MatchResult {
 			}
 			for _, entry := range sudoRuleCVE {
 				if entry.CVE != nil && *entry.CVE == cveID {
-					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("High confidence CVE candidate: %s", cveID)))
+					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("High confidence CVE candidate: %s", cveID), ""))
 					matchedPaths[fmt.Sprintf("cve-%s", cveID)] = true
 					break
 				}
@@ -204,7 +224,7 @@ func matchFindings(f *Findings) []MatchResult {
 			}
 			for _, entry := range other {
 				if entry.CVE != nil && *entry.CVE == cveID {
-					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("High confidence CVE candidate: %s", cveID)))
+					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("High confidence CVE candidate: %s", cveID), ""))
 					matchedPaths[fmt.Sprintf("cve-%s", cveID)] = true
 					break
 				}
@@ -219,7 +239,7 @@ func matchFindings(f *Findings) []MatchResult {
 			for _, entry := range writableCron {
 				entryBinary := entry.Binary
 				if entryBinary != nil && *entryBinary != "" && filepath.Base(scriptPath) == *entryBinary {
-					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("Writable cron script %s matches %s", scriptPath, *entryBinary)))
+					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("Writable cron script %s matches %s", scriptPath, *entryBinary), scriptPath))
 					matchedPaths[fmt.Sprintf("writable-cron-%s", *entryBinary)] = true
 					matched = true
 					break
@@ -241,44 +261,55 @@ func matchFindings(f *Findings) []MatchResult {
 						Severity:     &sev,
 					},
 					MatchConfidence: "high",
-					MatchReason:     fmt.Sprintf("Writable cron file (no specific dataset entry): %s", scriptPath),
+					MatchReason:        fmt.Sprintf("Writable cron file (no specific dataset entry): %s", scriptPath),
+				MatchedBinaryPath: scriptPath,
 				})
 				matchedPaths[fmt.Sprintf("writable-cron-generic-%s", scriptPath)] = true
 			}
 		}
 	}
 
-	// 6. Match capabilities to CAPABILITY_SETUID
-	if len(f.Capabilities) > 0 && len(capabilitySetuid) > 0 {
-		for _, entry := range capabilitySetuid {
-			matches = append(matches, createMatch(entry, "medium", fmt.Sprintf("File capabilities found: %d entries", len(f.Capabilities))))
-			matchedPaths["capabilities"] = true
-			break
+	// 6. Match capabilities to CAPABILITY_SETUID — match by binary file name if possible.
+	if len(f.Capabilities) > 0 {
+		for _, cap := range f.Capabilities {
+			for _, entry := range capabilitySetuid {
+				if entry.Binary != nil && pathsMatch(cap.File, *entry.Binary) {
+					key := fmt.Sprintf("cap-%s", cap.File)
+					if !matchedPaths[key] {
+						matches = append(matches, createMatch(entry, "high", fmt.Sprintf("cap_setuid on %s", cap.File), cap.File))
+						matchedPaths[key] = true
+					}
+				}
+			}
 		}
 	}
 
-	// 7. Container escape - check for docker/QEMU
-	if f.ContainerDetected {
+	// 7a. Docker socket escape — requires only DockerSocketAccessible.
+	// ContainerDetected is NOT required: a host machine with an exposed docker
+	// socket is just as exploitable as one inside a container.
+	if f.DockerSocketAccessible {
 		for _, entry := range other {
 			if hasTagStr(entry.Tags, "docker") || hasTagStr(entry.Tags, "container") {
-				if f.DockerSocketAccessible {
-					socketPath := "unknown"
-					if f.DockerSocket != nil {
-						socketPath = *f.DockerSocket
-					}
-					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("Docker escape via accessible socket: %s", socketPath)))
-					matchedPaths["docker-escape"] = true
-					break
+				socketPath := "unknown"
+				if f.DockerSocket != nil {
+					socketPath = *f.DockerSocket
 				}
+				matches = append(matches, createMatch(entry, "high", fmt.Sprintf("Docker escape via accessible socket: %s", socketPath), "docker"))
+				matchedPaths["docker-escape"] = true
+				break
 			}
-			if hasTagStr(entry.Tags, "qemu") || hasTagStr(entry.Tags, "kvm") {
-				if f.VirtualizationType != nil {
-					vt := *f.VirtualizationType
-					if vt == "qemu" || vt == "QEMU" {
-						matches = append(matches, createMatch(entry, "high", fmt.Sprintf("QEMU/KVM escape: %s", vt)))
-						matchedPaths["qemu-escape"] = true
-						break
-					}
+		}
+	}
+
+	// 7b. QEMU/KVM escape — requires ContainerDetected with QEMU virtualization type.
+	if f.ContainerDetected && f.VirtualizationType != nil {
+		vt := *f.VirtualizationType
+		if vt == "qemu" || vt == "QEMU" {
+			for _, entry := range other {
+				if hasTagStr(entry.Tags, "qemu") || hasTagStr(entry.Tags, "kvm") {
+					matches = append(matches, createMatch(entry, "high", fmt.Sprintf("QEMU/KVM escape: %s", vt), ""))
+					matchedPaths["qemu-escape"] = true
+					break
 				}
 			}
 		}
@@ -292,7 +323,7 @@ func matchFindings(f *Findings) []MatchResult {
 		// GitLab Runner match
 		if !matchedTags["gitlab"] && (hasTagStr(tags, "gitlab") || hasTagStr(tags, "ci-cd")) {
 			if f.ServiceVersions.GitLabRunner != nil {
-				matches = append(matches, createMatch(entry, "high", fmt.Sprintf("GitLab Runner token accessible: %s", *f.ServiceVersions.GitLabRunner)))
+				matches = append(matches, createMatch(entry, "high", fmt.Sprintf("GitLab Runner token accessible: %s", *f.ServiceVersions.GitLabRunner), ""))
 				matchedPaths["gitlab-runner"] = true
 				matchedTags["gitlab"] = true
 			}
@@ -302,7 +333,7 @@ func matchFindings(f *Findings) []MatchResult {
 		if !matchedTags["kubernetes"] && hasTagStr(tags, "kubernetes") {
 			for _, tool := range f.ToolsAvailable {
 				if tool == "kubectl" {
-					matches = append(matches, createMatch(entry, "medium", "Kubernetes kubectl available - service account token may be accessible"))
+					matches = append(matches, createMatch(entry, "medium", "Kubernetes kubectl available - service account token may be accessible", "kubectl"))
 					matchedPaths["kubernetes-token"] = true
 					matchedTags["kubernetes"] = true
 					break
@@ -314,7 +345,7 @@ func matchFindings(f *Findings) []MatchResult {
 		if !matchedTags["passwd"] && hasTagStr(tags, "passwd") {
 			for _, cve := range f.CveCandidates {
 				if cve.CVE == "WRT-PASSWD" {
-					matches = append(matches, createMatch(entry, "critical", "Writable /etc/passwd detected - potential for user creation with root privileges"))
+					matches = append(matches, createMatch(entry, "critical", "Writable /etc/passwd detected - potential for user creation with root privileges", "/etc/passwd"))
 					matchedPaths["writable-passwd"] = true
 					matchedTags["passwd"] = true
 					break
@@ -325,7 +356,7 @@ func matchFindings(f *Findings) []MatchResult {
 		// SSH key leak match
 		if !matchedTags["ssh"] && hasTagStr(tags, "ssh") {
 			if f.SSHKeyFound != nil {
-				matches = append(matches, createMatch(entry, "high", fmt.Sprintf("SSH private key found: %s", *f.SSHKeyFound)))
+				matches = append(matches, createMatch(entry, "high", fmt.Sprintf("SSH private key found: %s", *f.SSHKeyFound), *f.SSHKeyFound))
 				matchedPaths["ssh-key"] = true
 				matchedTags["ssh"] = true
 			}
@@ -334,7 +365,7 @@ func matchFindings(f *Findings) []MatchResult {
 		// Environment secrets match
 		if !matchedTags["env"] && hasTagStr(tags, "env") {
 			if len(f.EnvSecrets) > 0 {
-				matches = append(matches, createMatch(entry, "high", fmt.Sprintf("Environment variable secrets found: %d entries", len(f.EnvSecrets))))
+				matches = append(matches, createMatch(entry, "high", fmt.Sprintf("Environment variable secrets found: %d entries", len(f.EnvSecrets)), ""))
 				matchedPaths["env-secrets"] = true
 				matchedTags["env"] = true
 			}
@@ -343,7 +374,7 @@ func matchFindings(f *Findings) []MatchResult {
 		// AWS credentials match
 		if !matchedTags["aws"] && hasTagStr(tags, "aws") {
 			if f.AWSCredentialsFound {
-				matches = append(matches, createMatch(entry, "high", "AWS credentials file accessible"))
+				matches = append(matches, createMatch(entry, "high", "AWS credentials file accessible", ""))
 				matchedPaths["aws-creds"] = true
 				matchedTags["aws"] = true
 			}
@@ -352,7 +383,7 @@ func matchFindings(f *Findings) []MatchResult {
 		// MySQL config match
 		if !matchedTags["mysql"] && hasTagStr(tags, "mysql") {
 			if f.MySQLConfigFound {
-				matches = append(matches, createMatch(entry, "high", "MySQL credentials found in config"))
+				matches = append(matches, createMatch(entry, "high", "MySQL credentials found in config", ""))
 				matchedPaths["mysql-creds"] = true
 				matchedTags["mysql"] = true
 			}
@@ -362,7 +393,7 @@ func matchFindings(f *Findings) []MatchResult {
 		if !matchedTags["compose"] && hasTagStr(tags, "compose") {
 			for _, f := range f.InterestingFiles {
 				if filepath.Base(f) == "docker-compose.yml" || filepath.Base(f) == "compose.yml" {
-					matches = append(matches, createMatch(entry, "high", "Docker Compose file with secrets found"))
+					matches = append(matches, createMatch(entry, "high", "Docker Compose file with secrets found", f))
 					matchedPaths["docker-compose"] = true
 					matchedTags["compose"] = true
 					break

