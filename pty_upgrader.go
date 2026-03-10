@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -230,6 +228,37 @@ func (p *PTYUpgrader) switchConn(c net.Conn) {
 func (p *PTYUpgrader) write(data string) error {
 	_, err := p.conn.Write([]byte(data))
 	return err
+}
+
+// clearDeadline removes any read/write deadline on the connection, resets the
+// bufio.Reader, and drains any residual data from the OS TCP receive buffer.
+// Must be called before starting any new command operation (recon, exec, etc.).
+//
+// Why Reset + drain:
+//   - bufio.Reader caches read errors (b.err); Reset clears that error so the
+//     next ReadByte doesn't return a stale timeout immediately.
+//   - readUntilSentinelProgress may find the sentinel in the command echo
+//     (since the command itself contains the sentinel string) and return early,
+//     leaving the actual output and bash prompt unread in the OS TCP receive
+//     buffer.  readUntilPrompt has a 1 s timeout; if it times out before
+//     draining the residual bytes, those bytes remain in the TCP buffer and
+//     corrupt the next operation's read stream.
+//   - The drain reads with a short 150 ms deadline until no more data arrives.
+//     This is safe between commands because the remote shell is idle.
+func (p *PTYUpgrader) clearDeadline() {
+	p.conn.SetDeadline(time.Time{}) //nolint:errcheck
+	p.reader.Reset(p.conn)
+
+	// Drain any bytes left in the OS TCP receive buffer.
+	drain := make([]byte, 4096)
+	for {
+		p.conn.SetReadDeadline(time.Now().Add(150 * time.Millisecond)) //nolint:errcheck
+		n, err := p.conn.Read(drain)
+		if n == 0 || err != nil {
+			break
+		}
+	}
+	p.conn.SetDeadline(time.Time{}) //nolint:errcheck
 }
 
 // PythonBin returns the detected Python binary ("python3" or "python").
@@ -522,141 +551,3 @@ func (p *PTYUpgrader) hasRealPrompt(output string) bool {
 	return nonEmpty >= 1
 }
 
-// sendWindowSize queries the local terminal dimensions and sends them to the
-// remote shell via stty. Safe to call from any goroutine.
-func (p *PTYUpgrader) sendWindowSize(fd int) {
-	cols, rows, err := term.GetSize(fd)
-	if err != nil || cols <= 0 || rows <= 0 {
-		return
-	}
-	p.conn.Write([]byte(fmt.Sprintf("stty columns %d rows %d\n", cols, rows)))
-}
-
-// Interact enters interactive mode with the shell.
-func (p *PTYUpgrader) Interact() error {
-	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
-		fmt.Println("[!] stdin is not a TTY - interactive mode unavailable")
-		return nil
-	}
-
-	// Print BEFORE entering raw mode so \n works correctly.
-	fmt.Printf("[*] Entering interactive mode with %s\n", p.addr)
-	fmt.Println("[*] Press Ctrl+D to close connection")
-
-	// TCP keepalive so the OS detects silent drops (NAT timeout, cable pull, etc.)
-	// without waiting for a user keypress to trigger a write error.
-	if tc, ok := p.conn.(*net.TCPConn); ok {
-		tc.SetKeepAlive(true)
-		tc.SetKeepAlivePeriod(10 * time.Second)
-	}
-
-	oldState, err := term.MakeRaw(fd)
-	if err != nil {
-		return err
-	}
-	defer term.Restore(fd, oldState)
-
-	// Forward terminal resize events to the remote shell.
-	winchCh := make(chan os.Signal, 1)
-	signal.Notify(winchCh, syscall.SIGWINCH)
-	go func() {
-		for range winchCh {
-			p.sendWindowSize(fd)
-		}
-	}()
-	defer func() {
-		signal.Stop(winchCh)
-		close(winchCh)
-	}()
-
-	remoteDone := make(chan struct{})
-	stdinDone := make(chan struct{})
-
-	// Remote -> stdout.
-	// Use stateful ANSI parser to catch fragmented escape sequences (pbsh v2.0 attack).
-	// CSI sequences (colours, cursor movement) pass through unchanged — TUI apps need them.
-	// All other escape sequences are stripped.
-	go func() {
-		defer close(remoteDone)
-		buf := make([]byte, 4096)
-		for {
-			n, err := p.conn.Read(buf)
-			if n > 0 {
-				// Use stateful ANSI parser which handles byte-level fragmentation
-				out := p.ansiState.Parse(buf[:n])
-				if len(out) > 0 {
-					os.Stdout.Write(out)
-					os.Stdout.Sync()
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	// APC Warning Checker goroutine - runs alongside remote reader
-	// to detect APC sequences that might indicate TTY hijacking.
-	apcWarningDone := make(chan struct{})
-	go func() {
-		defer close(apcWarningDone)
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if p.ansiState.HasAPCWarning() {
-					fmt.Print("\r\n[!] WARNING: Suspicious APC sequence detected.\r\n")
-					fmt.Print("[!] Potential TTY hijacking attempt detected.\r\n")
-					fmt.Print("[!] Do not enter any credentials or sensitive information.\r\n")
-					return
-				}
-			case <-remoteDone:
-				return
-			}
-		}
-	}()
-
-	// Stdin -> remote. Ctrl+D closes the connection immediately.
-	go func() {
-		defer close(stdinDone)
-		buf := make([]byte, 1)
-		for {
-			_, err := os.Stdin.Read(buf)
-			if err != nil {
-				return
-			}
-			if buf[0] == 0x04 { // Ctrl+D
-				p.conn.Close()
-				return
-			}
-			if _, err := p.conn.Write(buf); err != nil {
-				return
-			}
-		}
-	}()
-
-	// Wait for whichever side ends first.
-	// Wait for both remoteDone and apcWarningDone to ensure warnings are displayed.
-	select {
-	case <-remoteDone:
-		// Connection dropped or closed by remote. Close our side so the stdin
-		// goroutine's next Write fails and it exits on its own.
-		p.conn.Close()
-		<-apcWarningDone // Wait for any APC warning to be displayed
-		fmt.Print("\r\n[*] Connection lost.\r\n")
-	case <-stdinDone:
-		// Ctrl+D or local EOF. Give the remote side a moment to drain.
-		select {
-		case <-remoteDone:
-		case <-time.After(500 * time.Millisecond):
-			p.conn.Close()
-			<-remoteDone
-		}
-		<-apcWarningDone // Wait for any APC warning to be displayed
-		fmt.Print("\r\n[*] Session closed.\r\n")
-	}
-
-	return nil
-}

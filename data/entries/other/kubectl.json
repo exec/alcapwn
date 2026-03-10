@@ -1,0 +1,1 @@
+{"id":"kubectl_service_account","category":"OTHER","binary":"kubectl","cve":null,"exploitation":["cat /run/secrets/kubernetes.io/serviceaccount/token"],"source":"generic","tags":["kubernetes","container"],"severity":"medium"}

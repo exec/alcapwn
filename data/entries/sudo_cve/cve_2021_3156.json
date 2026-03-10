@@ -1,0 +1,1 @@
+{"id":"cve_2021_3156","category":"SUDO_RULE_CVE","binary":"sudo","cve":"CVE-2021-3156","exploitation":["sudoedit -s /"],"notes":"Baron Samedit heap overflow in sudo <= 1.9.5p1. Detection marker — needs compiled exploit binary.","source":"cve.mitre.org","tags":["sudo","cve"],"severity":"critical"}

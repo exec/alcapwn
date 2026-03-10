@@ -1,0 +1,1 @@
+{"id":"suid_validate","category":"SUID_CUSTOM","binary":"validate","cve":null,"exploitation":["{{binary}}"],"post_exploit":["id"],"notes":"TryHackMe/BrainPan. Buffer overflow -> root.","source":"tryhackme/BrainPan","tags":["suid","ctf"],"severity":"high"}

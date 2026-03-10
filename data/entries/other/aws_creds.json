@@ -1,0 +1,1 @@
+{"id":"aws_credentials","category":"OTHER","binary":"aws","cve":null,"exploitation":["cat ~/.aws/credentials","aws sts get-caller-identity"],"source":"generic","tags":["aws"],"severity":"high"}

