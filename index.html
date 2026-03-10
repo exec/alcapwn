@@ -276,7 +276,8 @@
 
     .roadmap-list {
       list-style: none;
-      display: grid;
+      display: flex;
+      flex-direction: column;
       gap: 12px;
     }
 
@@ -285,14 +286,10 @@
       border: 1px solid var(--border2);
       border-radius: 6px;
       padding: 14px 16px;
-      display: flex;
-      align-items: flex-start;
+      display: grid;
+      grid-template-columns: 90px 1fr;
       gap: 12px;
-    }
-
-    .roadmap-content {
-      flex: 1;
-      min-width: 0;
+      align-items: start;
     }
 
     .roadmap-item.tbd::before {
