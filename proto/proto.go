@@ -51,6 +51,7 @@ type Hello struct {
 	Arch      string `json:"arch"`
 	User      string `json:"user"`
 	UID       string `json:"uid"`
+	Shell     string `json:"shell,omitempty"` // path of discovered shell; empty = built-in mini executor
 }
 
 // Welcome is sent by the server in response to Hello.

