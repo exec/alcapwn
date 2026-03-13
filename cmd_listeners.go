@@ -25,7 +25,7 @@ func (c *Console) cmdListen(args []string) {
 			fmt.Printf("[!] Invalid address %q: %v\n", addr, err)
 			return
 		}
-		var registerPath, beaconPath string
+		var registerPath, beaconPath, downloadDir string
 		rest := args[2:]
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
@@ -39,9 +39,14 @@ func (c *Console) cmdListen(args []string) {
 					i++
 					beaconPath = rest[i]
 				}
+			case "--download-dir":
+				if i+1 < len(rest) {
+					i++
+					downloadDir = rest[i]
+				}
 			}
 		}
-		if err := c.StartHTTPListener(addr, registerPath, beaconPath); err != nil {
+		if err := c.StartHTTPListener(addr, registerPath, beaconPath, downloadDir); err != nil {
 			fmt.Printf("[!] %v\n", err)
 			return
 		}
@@ -76,22 +81,36 @@ func (c *Console) cmdListeners() {
 		return
 	}
 
-	fmt.Printf("  %-6s  %-22s  %s\n", "Proto", "Address", "Sessions")
-	fmt.Printf("  %-6s  %-22s  %s\n",
+	fmt.Printf("  %-3s  %-6s  %-22s  %s\n", "Idx", "Proto", "Address", "Info")
+	fmt.Printf("  %-3s  %-6s  %-22s  %s\n",
+		strings.Repeat("─", 3),
 		strings.Repeat("─", 6),
 		strings.Repeat("─", 22),
-		strings.Repeat("─", 8))
+		strings.Repeat("─", 20))
 
+	idx := 1
+	// TCP listeners first
 	for _, e := range tcpEntries {
 		n := int(atomic.LoadInt32(&e.sessionCount))
 		noun := "sessions"
 		if n == 1 {
 			noun = "session"
 		}
-		fmt.Printf("  %-6s  %-22s  %d %s\n", "TCP", e.addr, n, noun)
+		fmt.Printf("  %-3d  %-6s  %-22s  %d %s\n", idx, "TCP", e.addr, n, noun)
+		idx++
 	}
+	// Then HTTP listeners
 	for _, addr := range httpAddrs {
-		fmt.Printf("  %-6s  %-22s  —\n", "HTTP", addr)
+		c.httpListeners.mu.Lock()
+		e := c.httpListeners.listeners[addr]
+		c.httpListeners.mu.Unlock()
+
+		info := "—"
+		if e != nil && e.downloadDir != "" {
+			info = "download=" + e.downloadToken
+		}
+		fmt.Printf("  %-3d  %-6s  %-22s  %s\n", idx, "HTTP", addr, info)
+		idx++
 	}
 }
 

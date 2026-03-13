@@ -619,6 +619,9 @@ func (c *Console) acceptLoop(ln net.Listener, entry *listenerEntry) {
 			switch {
 			case proto.IsAgentHandshake(peek):
 				isAgent = true
+				if c.opts.verbosity >= 1 {
+					c.printer.Notify("[*] Incoming connection identified as agent (magic: %q)", string(peek))
+				}
 				finalConn = &prefixConn{Conn: conn, prefix: peek}
 
 			case n > 0 && peek[0] == 0x16 && c.opts.tlsEnabled && c.opts.tlsCfg != nil:
@@ -883,6 +886,8 @@ const (
 
 // process filters p and returns bytes safe to write to the operator's terminal.
 // apcDetected is true on the first call that encounters an APC sequence.
+// NOTE: This filter is stateful across calls - incomplete escape sequences at chunk
+// boundaries are preserved in the state machine.
 func (f *interactiveFilter) process(p []byte) (out []byte, apcDetected bool) {
 	for _, b := range p {
 		switch f.state {

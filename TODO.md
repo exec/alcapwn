@@ -11,12 +11,14 @@ advanced post-exploitation, and OPSEC-aware infrastructure.
 ### Phase 1 — Agent/Server Split ✓ (commit d3bac6c)
 All items complete. See DEVELOPMENT_v3.md for design notes.
 
-### Phase 3 — Payload Generation ✓ (partial)
-Core generate command complete. Stage0/Stage1 stager deferred.
+### Phase 3 — Payload Generation ✓
+Core generate command complete. Shell one-liner output added. Stage0/Stage1 stager deferred.
 
-### Phase 4 — Encryption Hardening ✓ (partial)
-ECDH key agreement and certificate pinning complete. Rekeying and encrypted queue deferred.
-See DEVELOPMENT_v3.md for design notes.
+### Phase 4 — Encryption Hardening ✓ (complete)
+ECDH key agreement, certificate pinning, XOR obfuscation all complete. Rekeying deferred.
+
+### Phase 5 — Obfuscation & OPSEC ✓
+XOR string obfuscation, HTTP traffic blending, proxy support, random padding, agent download complete.
 
 ---
 
@@ -48,37 +50,45 @@ WebSocket, DNS, ICMP listeners deferred to later.
 
 ---
 
-## Phase 3 — Payload Generation
+## Phase 3 — Payload Generation ✓ (generate + oneliner done)
 
-- [x] `generate` command: produce agent binary for target arch/OS
-- [x] Cross-compilation via `GOOS`/`GOARCH` with `-ldflags` injection
-- [x] Shell one-liner output (`generate oneliner`)
+- [x] `generate` command: produce agent binary for target arch/OS — ✓
+- [x] Cross-compilation via `GOOS`/`GOARCH` with `-ldflags` injection — ✓
+- [x] Shell one-liner output (`generate oneliner`) — ✓
 - [ ] Stage0 dropper: tiny payload (<5KB) that fetches and executes stage1 in memory
 - [ ] Stage1 loader: in-memory execution of stage2 without touching disk
 
 ---
 
-## Phase 4 — Encryption Hardening
+## Phase 4 — Encryption Hardening ✓ (partial)
 
 Current: optional TLS with ephemeral cert. No per-session symmetric keys.
 
-- [x] ECDH (X25519) key agreement on first contact → per-session AES-256-GCM keys — DONE
-- [x] Certificate pinning on agent side (embed server FP at generate time) — DONE (serverFingerprint ldflags var)
-- [ ] Session rekeying at configurable intervals — NOT YET (MsgRekey type defined but not auto-triggered; defer)
-- [ ] Encrypted command queue persisted to disk (survive server restart) — NOT YET (deferred; different concern)
-- [ ] Payload encryption: XOR/AES stub wrapper for generated agents — NOT YET (this is Phase 5)
+- [x] ECDH (X25519) key agreement on first contact → per-session AES-256-GCM keys — ✓
+- [x] Certificate pinning on agent side (embed server FP at generate time) — ✓ (serverFingerprint ldflags var)
+- [ ] Session rekeying at configurable intervals — deferred (MsgRekey type defined but not auto-triggered)
+- [ ] Encrypted command queue persisted to disk (survive server restart) — deferred
+- [x] Payload encryption: XOR/AES stub wrapper for generated agents — ✓ (Phase 5 includes this)
 
 ---
 
-## Phase 5 — Obfuscation & OPSEC
+## Phase 5 — Obfuscation & OPSEC ✓
 
-- [ ] Payload string encryption (RC4/XOR keys embedded, decrypt at runtime)
-- [ ] Import table obfuscation (Go: use `//go:linkname` tricks or syscall wrappers)
-- [ ] Configurable beacon jitter (e.g. ±20% of interval)
-- [ ] Traffic blending: normalize HTTP headers/URIs to mimic a known service
-- [ ] Malleable profiles (`profile create browser --user-agent "..." --beacon 60s`)
-- [ ] Chunked/randomized packet sizes to defeat size-based fingerprinting
-- [ ] Proxy-aware agent: read system proxy (HTTP_PROXY / WinHTTP) and use it
+- [x] Payload string encryption (XOR per-build key, --obfuscate flag on generate) ✓
+- [x] Traffic blending: browser UA, custom URI paths, browser-like HTTP headers ✓
+- [x] Proxy-aware agent: http.ProxyFromEnvironment (HTTP_PROXY/HTTPS_PROXY/NO_PROXY) ✓
+- [x] Chunked/randomized packet sizes — random 0-63 byte padding per encrypted message ✓
+- [x] Configurable beacon jitter (already implemented in jitteredSleep) ✓
+- [ ] Import table obfuscation (requires garble or //go:linkname tricks; deferred)
+- [ ] Malleable profiles (profile create browser --user-agent ... --beacon 60s)
+
+### Agent Download via HTTP Listener (NEW)
+
+- [x] HTTP listener serves files at `/download/{token}/{filename}` — DONE
+- [x] Random 6-char token per listener for URL obscurity — DONE
+- [x] File whitelist (only generated agents can be downloaded) — DONE
+- [x] `generate --listener <idx>` uses listener for C2 + download — DONE
+- [x] `--download-dir` flag on `listen http` command — DONE
 
 ---
 
@@ -164,12 +174,12 @@ Nice to have; probably not needed for NCL but architecturally correct.
 
 ## Existing Bugs / Known Limitations
 
-- [ ] `exec <id>` — no timeout handling; hangs on commands with no output terminator
-- [ ] `ps <id>` — output is raw; no structured parsing (PID/name/user columns)
-- [ ] `broadcast` — sends a message to sessions' notes, not an actual command; wire to `exec`
-- [ ] `creds <id>` — manual entry only; hook into auto-harvest post-exploit
-- [ ] Interactive filter in `console.go` — stateful ANSI parser may miss fragmented sequences
-- [ ] Drain goroutine coordination — `stopDrain` has a small race on rapid re-use
+- [x] `exec <id>` — has 5s (PTY) / 30s (agent) timeout
+- [x] `ps <id>` — runs `ps -eo pid,user,%cpu,%mem,comm` with columns
+- [x] `broadcast` — already sends commands to sessions (not notes)
+- [x] `creds <id>` — auto-harvests shadow, SSH keys, .env, bash history
+- [ ] Interactive filter in `console.go` — stateful ANSI parser may miss fragmented sequences (complex, deferred)
+- [x] Drain goroutine coordination — `stopDrain` race on rapid re-use (fixed with state check)
 - [ ] macOS recon — OS type detected but no macOS-specific priv-esc checks
 - [ ] Recon parser regexes — brittle against non-standard version string formats
 

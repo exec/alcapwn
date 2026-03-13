@@ -645,26 +645,88 @@ def phase7_load(alc, port, host_ip, max_sessions=30, batch=5, pause=20):
         ok(f"load test: {total} sessions handled cleanly")
 
 
+def phase8_http_generate(alc, port, host_ip):
+    """Phase 8: HTTP listener + generate command."""
+    section("Phase 8: HTTP listener + generate command")
+
+    # Start HTTP listener with download dir.
+    alc.drain()
+    alc.send("listen http :8888 --download-dir /tmp")
+    out = alc.read_until(r"alcapwn>", 10)
+    http_ok = "HTTP listener started" in out
+    ok("HTTP listener starts with --download-dir") if http_ok else fail("HTTP listener starts", out[:300])
+
+    # Check listeners shows indices and download token.
+    alc.drain()
+    alc.send("listeners")
+    out = alc.read_until(r"alcapwn>", 8)
+    has_idx = "Idx" in out and "HTTP" in out
+    has_download = "download=" in out
+    ok("listeners shows indices and download info") if has_idx and has_download else fail("listeners shows indices/download", out[:400])
+
+    # Test generate with --listener flag (index 2 = HTTP listener after TCP on args.port).
+    # The build takes up to ~60s; use a 90s timeout.
+    alc.drain()
+    alc.send("generate linux amd64 --listener 2")
+    out = alc.read_until(r"alcapwn>", 90)
+    build_ok = re.search(r"\[\+\].*MB", out) is not None
+    ok("generate builds agent") if build_ok else fail("generate builds agent", out[:300])
+
+    # Reuse same output for transport and download URL checks.
+    http_transport = "http" in out.lower() and ("transport" in out.lower() or "beacon" in out.lower())
+    ok("generate uses HTTP transport") if http_transport else fail("generate HTTP transport", out[:300])
+
+    has_dl_url = "Download:" in out and "http://" in out
+    ok("generate shows download URL") if has_dl_url else fail("generate shows download URL", out[:300])
+
+    # Clean up listener.
+    alc.drain()
+    alc.send("unlisten http :8888")
+    alc.read_until(r"alcapwn>", 5)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=6000)
-    parser.add_argument("--host-ip", default="10.0.0.19")
+    parser.add_argument("--host-ip", default=None)
     parser.add_argument("--load-max", type=int, default=30)
     parser.add_argument("--load-batch", type=int, default=5)
     parser.add_argument("--load-pause", type=int, default=20)
     parser.add_argument("--skip", nargs="*", default=[],
                         help="phases to skip: core commands multi persist tls firewall load")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="enable verbose output (-v flag to alcapwn)")
     args = parser.parse_args()
 
-    print(f"\n{BOLD}alcapwn test suite{RESET}  port={args.port}  host={args.host_ip}\n")
+    # Auto-detect host IP if not provided
+    if args.host_ip is None:
+        try:
+            result = subprocess.run(
+                ["ip", "route", "get", "1.1.1.1"],
+                capture_output=True, text=True, timeout=5
+            )
+            match = re.search(r'src (\d+\.\d+\.\d+\.\d+)', result.stdout)
+            if match:
+                args.host_ip = match.group(1)
+            else:
+                # fallback: parse hostname -I
+                result = subprocess.run(
+                    ["hostname", "-I"], capture_output=True, text=True, timeout=5
+                )
+                args.host_ip = result.stdout.strip().split()[0] if result.stdout else "127.0.0.1"
+        except Exception:
+            args.host_ip = "127.0.0.1"  # last resort default
+
+    verbose_args = ["-v=1"] if args.verbose else []
+    print(f"\n{BOLD}alcapwn test suite{RESET}  port={args.port}  host={args.host_ip}{' VERBOSE' if args.verbose else ''}\n")
 
     # Ensure clean state
     kill_all_containers()
 
     # Start main alcapwn instance
-    alc = AlcapwnPTY(args.port)
+    alc = AlcapwnPTY(args.port, extra_args=verbose_args)
     alc.start()
     print(f"{GREEN}alcapwn started on port {args.port}{RESET}")
 
@@ -693,6 +755,8 @@ def main():
         between_phases(alc)
         if "load"     not in skip: phase7_load(alc, args.port, args.host_ip,
                                                 args.load_max, args.load_batch, args.load_pause)
+        between_phases(alc)
+        if "generate" not in skip: phase8_http_generate(alc, args.port, args.host_ip)
     except Exception as e:
         fail(f"unexpected error: {e}")
         traceback.print_exc()

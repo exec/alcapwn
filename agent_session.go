@@ -36,12 +36,18 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 	// ── Phase 1: Consume routing tag ─────────────────────────────────────────
 	// acceptLoop re-injected the 4-byte ALCA magic via prefixConn for routing
 	// detection.  Read and discard it here so the next bytes are the handshake.
+	if opts.verbosity >= 1 {
+		opts.printer.Notify("[*] [%d] Agent connected, reading routing tag...", sess.ID)
+	}
 	var routingTag [4]byte
 	if _, err := io.ReadFull(conn, routingTag[:]); err != nil {
 		opts.printer.Notify("[!] [%d] Failed to read routing tag: %v", sess.ID, err)
 		conn.Close()
 		opts.registry.Remove(sess.ID)
 		return
+	}
+	if opts.verbosity >= 1 {
+		opts.printer.Notify("[*] [%d] Routing tag: %q", sess.ID, string(routingTag[:]))
 	}
 
 	// ── Phase 2: X25519 key exchange → AES-256-GCM session ───────────────────
@@ -51,6 +57,9 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 		opts.registry.Remove(sess.ID)
 		return
 	}
+	if opts.verbosity >= 1 {
+		opts.printer.Notify("[*] [%d] Starting crypto handshake...", sess.ID)
+	}
 	cs, err := proto.NewServerCryptoSession(conn, opts.serverKey)
 	if err != nil {
 		opts.printer.Notify("[!] [%d] Crypto handshake failed: %v", sess.ID, err)
@@ -58,8 +67,14 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 		opts.registry.Remove(sess.ID)
 		return
 	}
+	if opts.verbosity >= 1 {
+		opts.printer.Notify("[*] [%d] Crypto handshake OK", sess.ID)
+	}
 
 	// ── Phase 3: Encrypted Hello / Welcome ───────────────────────────────────
+	if opts.verbosity >= 1 {
+		opts.printer.Notify("[*] [%d] Waiting for agent hello...", sess.ID)
+	}
 	env, err := proto.ReadMsgEncrypted(conn, cs)
 	if err != nil {
 		opts.printer.Notify("[!] [%d] Agent hello read failed: %v", sess.ID, err)
@@ -80,7 +95,13 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 		opts.registry.Remove(sess.ID)
 		return
 	}
+	if opts.verbosity >= 1 {
+		opts.printer.Notify("[*] [%d] Got hello: %s/%s user=%s", sess.ID, hello.OS, hello.Arch, hello.User)
+	}
 
+	if opts.verbosity >= 1 {
+		opts.printer.Notify("[*] [%d] Sending welcome...", sess.ID)
+	}
 	if err := proto.WriteMsgEncrypted(conn, cs, proto.MsgWelcome, proto.Welcome{
 		SessionID: sess.ID,
 		Interval:  60,
@@ -90,6 +111,9 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 		conn.Close()
 		opts.registry.Remove(sess.ID)
 		return
+	}
+	if opts.verbosity >= 1 {
+		opts.printer.Notify("[*] [%d] Welcome sent, agent ready", sess.ID)
 	}
 
 	// ── Session setup ────────────────────────────────────────────────────────

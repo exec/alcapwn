@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -39,38 +40,68 @@ func newTCPTransport() *TCPTransport {
 // to handleAgentSession, performs the X25519 key exchange, and completes the
 // Hello/Welcome handshake.
 func (t *TCPTransport) Connect(hello proto.Hello) error {
+	if isDebug() {
+		fmt.Fprintf(os.Stderr, "[agent] TCP connecting to %s\n", t.addr)
+	}
 	conn, err := net.DialTimeout("tcp", t.addr, 10*time.Second)
 	if err != nil {
+		if isDebug() {
+			fmt.Fprintf(os.Stderr, "[agent] dial failed: %v\n", err)
+		}
 		return err
 	}
 	t.conn = conn
+	if isDebug() {
+		fmt.Fprintf(os.Stderr, "[agent] connected, sending magic\n")
+	}
 
 	// 4-byte ALCA routing tag — must precede the crypto handshake.
 	if _, err := conn.Write(proto.Magic[:]); err != nil {
 		conn.Close()
 		return fmt.Errorf("routing tag: %w", err)
 	}
+	if isDebug() {
+		fmt.Fprintf(os.Stderr, "[agent] magic sent, starting crypto handshake\n")
+	}
 
 	cs, err := proto.NewClientCryptoSession(conn, t.fp)
 	if err != nil {
+		if isDebug() {
+			fmt.Fprintf(os.Stderr, "[agent] crypto handshake failed: %v\n", err)
+		}
 		conn.Close()
 		return fmt.Errorf("crypto handshake: %w", err)
 	}
 	t.cs = cs
+	if isDebug() {
+		fmt.Fprintf(os.Stderr, "[agent] crypto session established\n")
+	}
 
 	if err := proto.WriteMsgEncrypted(conn, cs, proto.MsgHello, hello); err != nil {
+		if isDebug() {
+			fmt.Fprintf(os.Stderr, "[agent] hello send failed: %v\n", err)
+		}
 		conn.Close()
 		return fmt.Errorf("hello: %w", err)
+	}
+	if isDebug() {
+		fmt.Fprintf(os.Stderr, "[agent] hello sent, waiting for welcome\n")
 	}
 
 	env, err := proto.ReadMsgEncrypted(conn, cs)
 	if err != nil {
+		if isDebug() {
+			fmt.Fprintf(os.Stderr, "[agent] welcome read failed: %v\n", err)
+		}
 		conn.Close()
 		return fmt.Errorf("welcome: %w", err)
 	}
 	if env.Type != proto.MsgWelcome {
 		conn.Close()
 		return fmt.Errorf("expected welcome, got %s", env.Type)
+	}
+	if isDebug() {
+		fmt.Fprintf(os.Stderr, "[agent] welcome received, session ready\n")
 	}
 
 	go t.readLoop()
