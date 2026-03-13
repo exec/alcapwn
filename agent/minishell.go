@@ -32,9 +32,23 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // ── Public non-interactive entrypoint ────────────────────────────────────────
+
+// syncWriter wraps an io.Writer with a mutex so concurrent pipeline stages
+// can safely write stdout and stderr to the same buffer.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
 
 // MiniExec runs cmdline without a shell interpreter and returns combined
 // stdout+stderr.  Supports pipes and I/O redirections.
@@ -45,7 +59,8 @@ func MiniExec(cmdline string) ([]byte, error) {
 		return nil, err
 	}
 	var out bytes.Buffer
-	err = runPipeline(stages, nil, &out, &out, os.Environ(), "")
+	sw := &syncWriter{w: &out}
+	err = runPipeline(stages, nil, sw, sw, os.Environ(), "")
 	return out.Bytes(), err
 }
 
