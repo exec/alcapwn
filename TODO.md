@@ -172,6 +172,35 @@ Nice to have; probably not needed for NCL but architecturally correct.
 
 ---
 
+## Phase 6b — Shell Payload (dhsh integration)
+
+**Problem**: agent on a box with no `/bin/sh` or `/bin/bash` can still run tasks but has
+no shell interpreter — `exec` tasks fail, interactive shell is impossible.
+
+**Plan**: modify dhsh upstream (exec/dhsh) with two small PRs, then integrate into alcapwn.
+
+### dhsh changes needed (PRs to exec/dhsh)
+- [ ] `isatty(STDIN_FILENO)` check in `dhsh_loop` → skip raw termios, ANSI colors, and
+      colored prompt when stdin is not a terminal (pipe-friendly mode)
+- [ ] `-c CMD` flag support → one-shot non-interactive execution (`dhsh -c "id"`)
+- [ ] Static build target in Makefile (`make static` using musl or `-static`) for
+      portability to minimal containers without glibc
+
+### alcapwn agent changes
+- [ ] `shell upload <id>` command — uploads pre-built dhsh binary to `/tmp/.d` on target,
+      marks executable; records that session now has a shell interpreter
+- [ ] Agent `exec` task falls back to `/tmp/.d -c CMD` if `sh`/`bash` not found
+- [ ] New task type `TaskShell` — agent spawns dhsh (or fallback sh/dash/busybox sh) and
+      does bidirectional stdin/stdout streaming through the encrypted channel
+- [ ] Operator-side: `shell <id>` command drops into interactive shell mode via TaskShell,
+      similar to the PTY interact flow but over the agent protocol
+
+**No fork needed** — dhsh stays a general-purpose shell. alcapwn treats it as a payload.
+A fork (`shellcapwn`) would only make sense if dhsh needed its own TCP connect-back, but
+the alcapwn agent already handles encrypted transport.
+
+---
+
 ## Existing Bugs / Known Limitations
 
 - [x] `exec <id>` — has 5s (PTY) / 30s (agent) timeout
