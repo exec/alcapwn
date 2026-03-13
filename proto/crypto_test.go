@@ -754,6 +754,78 @@ func TestHTTPCrypto_fingerprint(t *testing.T) {
 	}
 }
 
+// ── paddedEnvelope ────────────────────────────────────────────────────────────
+
+// TestPaddedEnvelope_variableSize verifies that repeated writes of the same
+// message produce ciphertexts of varying length, confirming that random padding
+// is being applied by marshalEnvelope.
+func TestPaddedEnvelope_variableSize(t *testing.T) {
+	serverPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	// We need a CryptoSession that writes to a bytes.Buffer (no net.Conn needed).
+	// Use doHandshakeWithConns to get a valid session, then write to a local buffer.
+	_, _, sCS, _ := doHandshakeWithConns(t, serverPriv)
+
+	const N = 30
+	lengths := make([]int, N)
+	for i := 0; i < N; i++ {
+		var buf bytes.Buffer
+		if err := WriteMsgEncrypted(&buf, sCS, MsgPing, struct{}{}); err != nil {
+			t.Fatalf("WriteMsgEncrypted[%d]: %v", i, err)
+		}
+		// Total bytes written = 4-byte length prefix + ciphertext.
+		lengths[i] = buf.Len()
+	}
+
+	// With 0–63 random padding bytes, the probability that all 30 samples are
+	// identical is astronomically low. Assert at least two distinct lengths.
+	first := lengths[0]
+	allSame := true
+	for _, l := range lengths[1:] {
+		if l != first {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
+		t.Fatal("all 30 encrypted messages had identical length — padding may not be working")
+	}
+}
+
+// TestPaddedEnvelope_decodeIgnoresPad verifies that ReadMsgEncrypted correctly
+// decodes a padded message: the _p field is silently ignored and Type/Data are correct.
+func TestPaddedEnvelope_decodeIgnoresPad(t *testing.T) {
+	serverPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	_, _, sCS, cCS := doHandshakeWithConns(t, serverPriv)
+
+	want := Hello{Version: "pad-test", Hostname: "example"}
+
+	var buf bytes.Buffer
+	if err := WriteMsgEncrypted(&buf, sCS, MsgHello, want); err != nil {
+		t.Fatalf("WriteMsgEncrypted: %v", err)
+	}
+
+	env, err := ReadMsgEncrypted(&buf, cCS)
+	if err != nil {
+		t.Fatalf("ReadMsgEncrypted: %v", err)
+	}
+	if env.Type != MsgHello {
+		t.Fatalf("type: want %q got %q", MsgHello, env.Type)
+	}
+	var got Hello
+	if err := json.Unmarshal(env.Data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got != want {
+		t.Fatalf("payload mismatch: want %+v got %+v", want, got)
+	}
+}
+
 // ── Full end-to-end: LoadOrCreateServerKey → handshake → message round-trip ──
 
 func TestFullRoundTrip(t *testing.T) {

@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -43,10 +44,14 @@ import (
 // ── HTTP listener registry ────────────────────────────────────────────────────
 
 type httpListenerEntry struct {
-	addr         string
-	server       *http.Server
-	registerPath string // e.g. "/register"
-	beaconPath   string // e.g. "/beacon/" (trailing slash for prefix match)
+	addr           string
+	server         *http.Server
+	registerPath   string // e.g. "/register"
+	beaconPath     string // e.g. "/beacon/" (trailing slash for prefix match)
+	downloadPath   string // e.g. "/download/a7f3b2/" (with random token)
+	downloadDir    string // directory to serve files from (can be empty = disabled)
+	downloadToken  string // random 6-char token for download path obscurity
+	allowedFiles   map[string]bool // whitelist of filenames that can be downloaded
 }
 
 type httpListenerRegistry struct {
@@ -91,7 +96,8 @@ func (r *httpListenerRegistry) all() []string {
 // StartHTTPListener starts an HTTP C2 listener on addr and registers it.
 // registerPath and beaconPath are the URI prefixes agents use (e.g. "/register"
 // and "/beacon/").  Pass empty strings to use the defaults.
-func (c *Console) StartHTTPListener(addr, registerPath, beaconPath string) error {
+// downloadDir is an optional directory to serve static files from (e.g. generated agents).
+func (c *Console) StartHTTPListener(addr, registerPath, beaconPath, downloadDir string) error {
 	if registerPath == "" {
 		registerPath = "/register"
 	}
@@ -103,9 +109,19 @@ func (c *Console) StartHTTPListener(addr, registerPath, beaconPath string) error
 		beaconPath += "/"
 	}
 
+	// Generate download token and path if downloadDir is provided.
+	var downloadPath, downloadToken string
+	if downloadDir != "" {
+		downloadToken = generateDownloadToken()
+		downloadPath = "/download/" + downloadToken + "/"
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc(registerPath, c.handleHTTPRegister)
 	mux.HandleFunc(beaconPath, c.handleHTTPBeacon)
+	if downloadPath != "" {
+		mux.HandleFunc(downloadPath, c.handleHTTPDownload)
+	}
 
 	srv := &http.Server{
 		Addr:         addr,
@@ -114,10 +130,14 @@ func (c *Console) StartHTTPListener(addr, registerPath, beaconPath string) error
 		WriteTimeout: 30 * time.Second,
 	}
 	entry := &httpListenerEntry{
-		addr:         addr,
-		server:       srv,
-		registerPath: registerPath,
-		beaconPath:   beaconPath,
+		addr:          addr,
+		server:        srv,
+		registerPath:  registerPath,
+		beaconPath:    beaconPath,
+		downloadPath:  downloadPath,
+		downloadDir:   downloadDir,
+		downloadToken: downloadToken,
+		allowedFiles:   make(map[string]bool),
 	}
 	if !c.httpListeners.add(addr, entry) {
 		return fmt.Errorf("already listening on %s", addr)
@@ -141,6 +161,22 @@ func (c *Console) StopHTTPListener(addr string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return entry.server.Shutdown(ctx)
+}
+
+// RegisterDownload adds a filename to the whitelist of downloadable files
+// for the HTTP listener at the given address.
+func (c *Console) RegisterDownload(addr, filename string) error {
+	c.httpListeners.mu.Lock()
+	defer c.httpListeners.mu.Unlock()
+	entry := c.httpListeners.listeners[addr]
+	if entry == nil {
+		return fmt.Errorf("no HTTP listener on %s", addr)
+	}
+	if entry.allowedFiles == nil {
+		entry.allowedFiles = make(map[string]bool)
+	}
+	entry.allowedFiles[filename] = true
+	return nil
 }
 
 // ── Registration handler ──────────────────────────────────────────────────────
@@ -370,6 +406,15 @@ func newHTTPToken() string {
 	return hex.EncodeToString(b[:])
 }
 
+// generateDownloadToken generates a random 6-char hex token for download path obscurity.
+func generateDownloadToken() string {
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("rand.Read: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])[:6]
+}
+
 // httpListenerAddrFromRequest returns the listener's host:port from the request
 // Host header, falling back to the server's Addr field.
 func httpListenerAddrFromRequest(r *http.Request) string {
@@ -377,4 +422,51 @@ func httpListenerAddrFromRequest(r *http.Request) string {
 		return r.Host
 	}
 	return r.URL.Host
+}
+
+// handleHTTPDownload serves static files from the download directory.
+// Requests to /download/{token}/{filename} are served from the listener's downloadDir.
+// Only whitelisted files (registered via RegisterDownload) can be served.
+func (c *Console) handleHTTPDownload(w http.ResponseWriter, r *http.Request) {
+	// URL path is /download/{token}/{filename} — extract token and filename first.
+	parts := strings.SplitN(r.URL.Path, "/", 4) // ["", "download", "{token}", "{filename}"]
+	if len(parts) < 4 {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	token := parts[2]
+	filename := parts[3]
+
+	// Look up the listener by download token (host-based matching is unreliable
+	// when the listener binds to 0.0.0.0 or an unspecified interface).
+	c.httpListeners.mu.Lock()
+	var downloadDir string
+	var allowedFiles map[string]bool
+	for _, e := range c.httpListeners.listeners {
+		if e.downloadToken == token {
+			downloadDir = e.downloadDir
+			allowedFiles = e.allowedFiles
+			break
+		}
+	}
+	c.httpListeners.mu.Unlock()
+
+	if downloadDir == "" {
+		http.Error(w, "download not configured", http.StatusNotFound)
+		return
+	}
+
+	if filename == "" || strings.Contains(filename, "..") {
+		http.Error(w, "invalid filename", http.StatusBadRequest)
+		return
+	}
+
+	// Check whitelist
+	if allowedFiles == nil || !allowedFiles[filename] {
+		http.Error(w, "file not allowed", http.StatusForbidden)
+		return
+	}
+
+	// Serve the file.
+	http.ServeFile(w, r, filepath.Join(downloadDir, filename))
 }

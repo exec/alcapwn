@@ -416,3 +416,167 @@ func TestGenerateTargets_windowsHasExt(t *testing.T) {
 		}
 	}
 }
+
+// ── TestBuildGenerateLDFlags obfuscate ────────────────────────────────────────
+
+func TestBuildGenerateLDFlags_obfuscate(t *testing.T) {
+	c := &Console{opts: sessionOpts{serverFingerprint: "deadbeef1234"}}
+	target := lookupTarget("linux", "amd64")
+	opts := generateOpts{
+		target:    target,
+		lhost:     "10.0.0.1",
+		lport:     "443",
+		transport: "tcp",
+		interval:  "60",
+		jitter:    "20",
+		obfuscate: true,
+	}
+	flags := buildGenerateLDFlags(opts, c)
+
+	// Obfuscated build must include xorKey and encoded variants.
+	for _, want := range []string{
+		"-X main.xorKey=",
+		"-X main.lhostEnc=",
+		"-X main.lportEnc=",
+		"-X main.transportEnc=",
+		"-X main.intervalEnc=",
+		"-X main.jitterEnc=",
+	} {
+		if !strings.Contains(flags, want) {
+			t.Errorf("expected flags to contain %q\nflags=%q", want, flags)
+		}
+	}
+
+	// Plain vars must be cleared (set to empty string).
+	for _, cleared := range []string{
+		"-X main.lhost=",
+		"-X main.lport=",
+		"-X main.transport=",
+		"-X main.interval=",
+		"-X main.jitter=",
+	} {
+		if !strings.Contains(flags, cleared) {
+			t.Errorf("expected plain var clear %q in flags\nflags=%q", cleared, flags)
+		}
+	}
+
+	// Plain lhost value must NOT appear as a standalone assignment.
+	if strings.Contains(flags, "-X main.lhost=10.0.0.1") {
+		t.Errorf("plain lhost value should not appear in obfuscated flags\nflags=%q", flags)
+	}
+}
+
+func TestBuildGenerateLDFlags_obfuscateNoFingerprint(t *testing.T) {
+	// When obfuscate=true and no fingerprint is set, serverFingerprintEnc must not appear.
+	c := &Console{opts: sessionOpts{serverFingerprint: ""}}
+	target := lookupTarget("linux", "amd64")
+	opts := generateOpts{
+		target:    target,
+		lhost:     "10.0.0.1",
+		lport:     "443",
+		transport: "tcp",
+		interval:  "60",
+		jitter:    "20",
+		obfuscate: true,
+	}
+	flags := buildGenerateLDFlags(opts, c)
+
+	if strings.Contains(flags, "serverFingerprintEnc") {
+		t.Errorf("serverFingerprintEnc should not appear when no fingerprint is set\nflags=%q", flags)
+	}
+}
+
+// ── TestXorEncodeStr_roundTrip ────────────────────────────────────────────────
+
+func TestXorEncodeStr_roundTrip(t *testing.T) {
+	plain := "192.168.1.100"
+	key := []byte{0x12, 0x34, 0x56, 0x78}
+	hexEnc := xorEncodeStr(plain, key)
+
+	// Manually decode: hex-decode then XOR.
+	encBytes := make([]byte, len(hexEnc)/2)
+	nibble := func(c byte) byte {
+		if c >= '0' && c <= '9' {
+			return c - '0'
+		}
+		return c - 'a' + 10
+	}
+	for i := range encBytes {
+		encBytes[i] = (nibble(hexEnc[i*2])<<4 | nibble(hexEnc[i*2+1])) ^ key[i%len(key)]
+	}
+	got := string(encBytes)
+	if got != plain {
+		t.Fatalf("roundTrip: want %q got %q", plain, got)
+	}
+}
+
+// ── TestXorGenKey ─────────────────────────────────────────────────────────────
+
+func TestXorGenKey_length(t *testing.T) {
+	k16 := xorGenKey(16)
+	if len(k16) != 16 {
+		t.Errorf("xorGenKey(16): want len=16, got %d", len(k16))
+	}
+	k32 := xorGenKey(32)
+	if len(k32) != 32 {
+		t.Errorf("xorGenKey(32): want len=32, got %d", len(k32))
+	}
+}
+
+func TestXorGenKey_random(t *testing.T) {
+	k1 := xorGenKey(16)
+	k2 := xorGenKey(16)
+	same := true
+	for i := range k1 {
+		if k1[i] != k2[i] {
+			same = false
+			break
+		}
+	}
+	if same {
+		t.Fatal("two xorGenKey(16) calls returned identical keys — crypto/rand may be broken")
+	}
+}
+
+// ── TestParseGenerateArgs new flags ──────────────────────────────────────────
+
+func TestParseGenerateArgs_obfuscate(t *testing.T) {
+	c := &Console{}
+	opts, ok := parseGenerateArgs([]string{"linux", "amd64", "--lhost", "10.0.0.1", "--obfuscate"}, c)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if !opts.obfuscate {
+		t.Error("expected obfuscate=true")
+	}
+}
+
+func TestParseGenerateArgs_httpUA(t *testing.T) {
+	c := &Console{}
+	opts, ok := parseGenerateArgs([]string{"linux", "amd64", "--lhost", "10.0.0.1", "--http-ua", "Custom/1.0"}, c)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if opts.httpUA != "Custom/1.0" {
+		t.Errorf("httpUA=%q, want %q", opts.httpUA, "Custom/1.0")
+	}
+}
+
+func TestParseGenerateArgs_httpPaths(t *testing.T) {
+	c := &Console{}
+	opts, ok := parseGenerateArgs([]string{
+		"linux", "amd64",
+		"--lhost", "10.0.0.1",
+		"--http-register-path", "/api/v1/health",
+		"--http-beacon-path", "/cdn/",
+	}, c)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if opts.httpRegisterPath != "/api/v1/health" {
+		t.Errorf("httpRegisterPath=%q, want %q", opts.httpRegisterPath, "/api/v1/health")
+	}
+	if opts.httpBeaconPath != "/cdn/" {
+		t.Errorf("httpBeaconPath=%q, want %q", opts.httpBeaconPath, "/cdn/")
+	}
+}
