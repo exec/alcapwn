@@ -113,41 +113,7 @@ type consoleState struct {
 
 // ── terminal input helpers ────────────────────────────────────────────────────
 
-// makeInputRaw transitions fd to "input-raw" mode: character-by-character
-// reads, echo off, ISIG off — but output post-processing (OPOST/ONLCR) is
-// intentionally left enabled so \n still produces CRLF.
-//
-// term.MakeRaw also clears OPOST, which breaks every goroutine that writes a
-// bare \n (spinner, consolePrinter.Notify, etc.) because those \n bytes are
-// no longer translated to \r\n by the kernel, causing lines to stack up at
-// their starting column instead of returning to column 0.
-//
-// Returns a restore func that resets the terminal to its prior state.
-func makeInputRaw(fd int) (restore func(), err error) {
-	termios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
-	if err != nil {
-		return func() {}, err
-	}
-	saved := *termios
-
-	// Same flags as term.MakeRaw — except we do NOT touch Oflag so OPOST/ONLCR
-	// stay on and every goroutine's \n continues to produce \r\n.
-	termios.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.PARMRK | unix.ISTRIP |
-		unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON
-	// Oflag: intentionally unchanged — keep OPOST + ONLCR.
-	termios.Lflag &^= unix.ECHO | unix.ECHONL | unix.ICANON | unix.ISIG | unix.IEXTEN
-	termios.Cflag &^= unix.CSIZE | unix.PARENB
-	termios.Cflag |= unix.CS8
-	termios.Cc[unix.VMIN] = 1
-	termios.Cc[unix.VTIME] = 0
-
-	if err := unix.IoctlSetTermios(fd, unix.TCSETS, termios); err != nil {
-		return func() {}, err
-	}
-	return func() {
-		unix.IoctlSetTermios(fd, unix.TCSETS, &saved) //nolint:errcheck
-	}, nil
-}
+// makeInputRaw is defined in makeInputRaw_linux.go / makeInputRaw_darwin.go.
 
 // ── lineEditor ────────────────────────────────────────────────────────────────
 
@@ -1219,7 +1185,7 @@ func (c *Console) interactWithSession(sess *Session) {
 		for {
 			// Poll stdin with a short timeout to allow clean cancellation.
 			var rfds unix.FdSet
-			rfds.Bits[fd>>6] |= int64(1) << (uint(fd) & 63)
+			fdSet(&rfds, fd)
 			tv := unix.Timeval{Sec: 0, Usec: 50_000}
 			n, err := unix.Select(fd+1, &rfds, nil, nil, &tv)
 			if err != nil {
@@ -1396,7 +1362,7 @@ func (c *Console) shellInteract(sessID int, conn net.Conn) {
 		buf := make([]byte, 1)
 		for {
 			var rfds unix.FdSet
-			rfds.Bits[fd>>6] |= int64(1) << (uint(fd) & 63)
+			fdSet(&rfds, fd)
 			tv := unix.Timeval{Sec: 0, Usec: 50_000}
 			n, selErr := unix.Select(fd+1, &rfds, nil, nil, &tv)
 			if selErr != nil {

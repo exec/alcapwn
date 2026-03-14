@@ -32,7 +32,7 @@ func TestMiniExec_commandWithArgs(t *testing.T) {
 }
 
 func TestMiniExec_pipe(t *testing.T) {
-	out, err := MiniExec("echo -e 'alpha\nbeta\ngamma' | grep beta")
+	out, err := MiniExec("printf 'alpha\nbeta\ngamma\n' | grep beta")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestMiniExec_pipe(t *testing.T) {
 }
 
 func TestMiniExec_multiStagePipe(t *testing.T) {
-	out, err := MiniExec("echo -e 'one\ntwo\nthree' | grep -v two | sort -r")
+	out, err := MiniExec("printf 'one\ntwo\nthree\n' | grep -v two | sort -r")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestMiniExec_exitError(t *testing.T) {
 func TestMiniExec_nonZeroExitStillReturnsOutput(t *testing.T) {
 	// grep exits 1 when there are no matches but still produces output for
 	// lines that do match in a multi-line input.
-	out, _ := MiniExec("echo -e 'match\nnope' | grep match")
+	out, _ := MiniExec("printf 'match\nnope\n' | grep match")
 	if !strings.Contains(string(out), "match") {
 		t.Fatalf("want 'match' in output even on non-zero exit, got %q", out)
 	}
