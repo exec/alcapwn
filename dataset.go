@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -399,6 +400,36 @@ func matchFindings(f *Findings) []MatchResult {
 					break
 				}
 			}
+		}
+	}
+
+	// 8. Windows privilege escalation matches (agent sessions with Win recon).
+	if len(f.WinPrivileges) > 0 || f.WinAlwaysInstallElevated || f.WinIsAdmin {
+		winTokenPriv := indexed["WIN_TOKEN_PRIV"]
+		winAIE := indexed["WIN_ALWAYS_INSTALL_ELEVATED"]
+
+		// SeImpersonatePrivilege / SeAssignPrimaryTokenPrivilege → potato exploits.
+		hasSeImpersonate := false
+		for _, priv := range f.WinPrivileges {
+			lower := strings.ToLower(priv)
+			if strings.Contains(lower, "impersonate") || strings.Contains(lower, "assignprimarytoken") {
+				hasSeImpersonate = true
+				break
+			}
+		}
+		if hasSeImpersonate && !matchedPaths["win-token-priv"] {
+			for _, entry := range winTokenPriv {
+				matches = append(matches, createMatch(entry, "high", "SeImpersonatePrivilege (or SeAssignPrimaryTokenPrivilege) found — potato attacks applicable", ""))
+			}
+			matchedPaths["win-token-priv"] = true
+		}
+
+		// AlwaysInstallElevated registry keys.
+		if f.WinAlwaysInstallElevated && !matchedPaths["win-aie"] {
+			for _, entry := range winAIE {
+				matches = append(matches, createMatch(entry, "high", "AlwaysInstallElevated registry keys set — MSI privesc applicable", ""))
+			}
+			matchedPaths["win-aie"] = true
 		}
 	}
 

