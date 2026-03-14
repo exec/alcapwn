@@ -190,6 +190,35 @@ def fail(name, detail=""):
 def section(title):
     print(f"\n{BOLD}{CYAN}── {title} {'─' * (50 - len(title))}{RESET}")
 
+# ── Phase 0: Go unit tests ──────────────────────────────────────────────────
+
+def phase0_unit_tests():
+    """Run `go test -race ./...` and surface per-package results."""
+    section("Phase 0: Go unit tests (go test -race ./...)")
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    result = subprocess.run(
+        ["go", "test", "-race", "./..."],
+        capture_output=True, text=True,
+        cwd=repo_root, timeout=120,
+    )
+    # Each output line is either "ok  <pkg>  <time>" or "FAIL <pkg> ..."
+    passed_pkgs, failed_pkgs = [], []
+    for line in (result.stdout + result.stderr).splitlines():
+        line = line.strip()
+        if line.startswith("ok "):
+            pkg = line.split()[1]
+            passed_pkgs.append(pkg)
+        elif line.startswith("FAIL") and not line.startswith("FAIL\t"):
+            pkg = line.split()[1] if len(line.split()) > 1 else line
+            failed_pkgs.append(pkg)
+    for pkg in passed_pkgs:
+        ok(f"go test {pkg}")
+    for pkg in failed_pkgs:
+        fail(f"go test {pkg}", "see above for details")
+    if result.returncode != 0 and not failed_pkgs:
+        # Something went wrong before any package ran (build error, etc.)
+        fail("go test ./...", result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "non-zero exit")
+
 # ── Individual test functions ──────────────────────────────────────────────
 
 def wait_for_session(alc, session_num, timeout=30):
@@ -695,7 +724,7 @@ def main():
     parser.add_argument("--load-batch", type=int, default=5)
     parser.add_argument("--load-pause", type=int, default=20)
     parser.add_argument("--skip", nargs="*", default=[],
-                        help="phases to skip: core commands multi persist tls firewall load")
+                        help="phases to skip: units core commands multi persist tls firewall load generate")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="enable verbose output (-v flag to alcapwn)")
     args = parser.parse_args()
@@ -722,6 +751,12 @@ def main():
     verbose_args = ["-v=1"] if args.verbose else []
     print(f"\n{BOLD}alcapwn test suite{RESET}  port={args.port}  host={args.host_ip}{' VERBOSE' if args.verbose else ''}\n")
 
+    skip = set(args.skip)
+
+    # Phase 0 runs before anything else — no PTY needed.
+    if "units" not in skip:
+        phase0_unit_tests()
+
     # Ensure clean state
     kill_all_containers()
 
@@ -740,7 +775,6 @@ def main():
     signal.signal(signal.SIGINT, cleanup)
 
     try:
-        skip = set(args.skip)
         if "core"     not in skip: phase1_core(alc, args.port, args.host_ip)
         between_phases(alc)
         if "commands" not in skip: phase2_commands(alc, args.port, args.host_ip)

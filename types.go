@@ -66,6 +66,11 @@ type Findings struct {
 	User                  *string          `json:"user"`
 	UID                   *string          `json:"uid"`
 	OS                    *string          `json:"os"`
+	// Windows agent session fields (populated by cmdReconAgent for GOOS=windows).
+	WinPrivileges            []string `json:"win_privileges,omitempty"`
+	WinIsAdmin               bool     `json:"win_is_admin,omitempty"`
+	WinAlwaysInstallElevated bool     `json:"win_always_install_elevated,omitempty"`
+	WinDomain                string   `json:"win_domain,omitempty"`
 }
 
 // Dataset types

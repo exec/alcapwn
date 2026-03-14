@@ -40,8 +40,11 @@ type sessionOpts struct {
 	serverKey         *ecdh.PrivateKey
 	serverFingerprint string // SHA-256(serverPubKey) lowercase hex; shown at startup
 	// Runtime dependencies injected by the console.
-	printer  *consolePrinter
-	registry *Registry
+	printer       *consolePrinter
+	registry      *Registry
+	// agentReadyCb is called (in a goroutine) once an agent session's task
+	// channel is live.  Set by acceptLoop when autoRecon is true.
+	agentReadyCb  func(*Session)
 	// Persistence store for updating session metadata
 	persist *PersistenceStore
 	persistMu *sync.Mutex

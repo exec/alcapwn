@@ -53,6 +53,8 @@ type Session struct {
 	drainStop chan struct{} // close to stop the drain goroutine
 	drainDone chan struct{} // closed when drain goroutine exits
 	drainConn net.Conn    // connection the drain goroutine is reading from
+	// Pivot state — SOCKS5 proxies and TCP forwards active on this session.
+	pivotState *pivotState
 }
 
 // Registry is a thread-safe store of active sessions, numbered 1–1024.

