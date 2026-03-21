@@ -9,12 +9,22 @@ package main
 import (
 	"bytes"
 	"crypto/ecdh"
-	"crypto/rand"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	crand "crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,7 +108,7 @@ func TestHTTPRegister_success(t *testing.T) {
 	serverKey := newTestServerKey(t)
 	c := newTestConsoleHTTP(t, serverKey)
 
-	agentPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	agentPriv, err := ecdh.X25519().GenerateKey(crand.Reader)
 	if err != nil {
 		t.Fatalf("generate agent key: %v", err)
 	}
@@ -137,7 +147,7 @@ func TestHTTPRegister_success(t *testing.T) {
 func TestHTTPRegister_noServerKey(t *testing.T) {
 	c := newTestConsoleHTTP(t, nil) // no server key
 
-	agentPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	agentPriv, _ := ecdh.X25519().GenerateKey(crand.Reader)
 	helloJSON, _ := json.Marshal(proto.Hello{Version: "v3"})
 	body := append(agentPriv.PublicKey().Bytes(), helloJSON...)
 
@@ -174,7 +184,7 @@ func TestHTTPRegister_badHello(t *testing.T) {
 	serverKey := newTestServerKey(t)
 	c := newTestConsoleHTTP(t, serverKey)
 
-	agentPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	agentPriv, _ := ecdh.X25519().GenerateKey(crand.Reader)
 	// 32-byte pubkey followed by invalid JSON.
 	body := append(agentPriv.PublicKey().Bytes(), []byte("not json {{{{")...)
 
@@ -226,7 +236,7 @@ func TestHTTPBeacon_badMethod(t *testing.T) {
 	serverKey := newTestServerKey(t)
 	c := newTestConsoleHTTP(t, serverKey)
 
-	agentPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	agentPriv, _ := ecdh.X25519().GenerateKey(crand.Reader)
 	token, _, _ := registerAgent(t, c, agentPriv, proto.Hello{Version: "v3", Hostname: "x"})
 
 	req := httptest.NewRequest(http.MethodPut, "/beacon/"+token, nil)
@@ -245,7 +255,7 @@ func TestHTTPBeacon_pollNoTask(t *testing.T) {
 	serverKey := newTestServerKey(t)
 	c := newTestConsoleHTTP(t, serverKey)
 
-	agentPriv, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	agentPriv, _ := ecdh.X25519().GenerateKey(crand.Reader)
 	token, _, _ := registerAgent(t, c, agentPriv, proto.Hello{Version: "v3", Hostname: "idle"})
 
 	// GET /beacon/{token} with no pending task → 204 No Content.
@@ -272,7 +282,7 @@ func TestHTTPBeacon_pollAndResult(t *testing.T) {
 	serverKey := newTestServerKey(t)
 	c := newTestConsoleHTTP(t, serverKey)
 
-	agentPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	agentPriv, err := ecdh.X25519().GenerateKey(crand.Reader)
 	if err != nil {
 		t.Fatalf("generate agent key: %v", err)
 	}
@@ -369,5 +379,185 @@ func TestHTTPBeacon_pollAndResult(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for agentExec to return")
+	}
+}
+
+// ── TLS listener tests ────────────────────────────────────────────────────────
+
+// makeSelfSignedCert generates a throw-away ECDSA P-256 self-signed cert and
+// returns the *tls.Config (for the server), the SHA-256 hex fingerprint, and
+// the raw DER bytes (for pin construction).
+func makeSelfSignedCert(t *testing.T) (*tls.Config, string, []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), crand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa.GenerateKey: %v", err)
+	}
+	serial, _ := crand.Int(crand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	certDER, err := x509.CreateCertificate(crand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("x509.CreateCertificate: %v", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("MarshalECPrivateKey: %v", err)
+	}
+	cert, err := tls.X509KeyPair(
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+	)
+	if err != nil {
+		t.Fatalf("X509KeyPair: %v", err)
+	}
+	cfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	fp := fmt.Sprintf("%x", sha256.Sum256(certDER))
+	return cfg, fp, certDER
+}
+
+// tlsPinClient builds an *http.Client that pins a specific SHA-256 hex fingerprint.
+func tlsPinClient(fpHex string) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+					if len(rawCerts) == 0 {
+						return errors.New("tls: no certificate presented")
+					}
+					got := fmt.Sprintf("%x", sha256.Sum256(rawCerts[0]))
+					if got != fpHex {
+						return fmt.Errorf("tls: cert fingerprint mismatch: got %s want %s", got, fpHex)
+					}
+					return nil
+				},
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+}
+
+// tlsListenerAddr starts a TLS HTTP listener on a random port and returns its
+// real bound address.  Polls up to 200ms for the goroutine to register.
+func tlsListenerAddr(t *testing.T, c *Console, tlsCfg *tls.Config) string {
+	t.Helper()
+	if err := c.StartHTTPListener("127.0.0.1:0", "", "", "", tlsCfg); err != nil {
+		t.Fatalf("StartHTTPListener TLS: %v", err)
+	}
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		c.httpListeners.mu.Lock()
+		var found string
+		for _, e := range c.httpListeners.listeners {
+			found = e.addr
+			break
+		}
+		c.httpListeners.mu.Unlock()
+		if found != "127.0.0.1:0" && found != "" {
+			return found
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for TLS listener to bind")
+	return ""
+}
+
+// newServerKey generates a fresh ECDH X25519 private key for test consoles.
+func newServerKey(t *testing.T) *ecdh.PrivateKey {
+	t.Helper()
+	key, err := ecdh.X25519().GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	return key
+}
+
+func TestHTTPListenerTLS_PlainHTTPRegression(t *testing.T) {
+	// nil tlsCfg → plain HTTP; must still work exactly as before.
+	c := newTestConsoleHTTP(t, newServerKey(t))
+	if err := c.StartHTTPListener("127.0.0.1:0", "", "", "", nil); err != nil {
+		t.Fatalf("StartHTTPListener plain: %v", err)
+	}
+	t.Cleanup(func() { _ = c.StopHTTPListener("127.0.0.1:0") })
+	// Verify the entry was registered.
+	c.httpListeners.mu.Lock()
+	var entry *httpListenerEntry
+	for _, e := range c.httpListeners.listeners {
+		entry = e
+	}
+	c.httpListeners.mu.Unlock()
+	if entry == nil {
+		t.Fatal("no listener registered")
+	}
+	if entry.useTLS {
+		t.Error("useTLS should be false for plain listener")
+	}
+}
+
+func TestHTTPListenerTLS_CorrectFingerprint(t *testing.T) {
+	tlsCfg, fp, _ := makeSelfSignedCert(t)
+	c := newTestConsoleHTTP(t, newServerKey(t))
+	addr := tlsListenerAddr(t, c, tlsCfg)
+	t.Cleanup(func() { _ = c.StopHTTPListener(addr) })
+
+	// Verify the registry entry has useTLS == true.
+	c.httpListeners.mu.Lock()
+	entry := c.httpListeners.listeners[addr]
+	c.httpListeners.mu.Unlock()
+	if entry == nil {
+		t.Fatalf("no listener registered at %s", addr)
+	}
+	if !entry.useTLS {
+		t.Errorf("useTLS should be true for TLS listener")
+	}
+
+	client := tlsPinClient(fp)
+	resp, err := client.Get("https://" + addr + "/")
+	if err != nil {
+		t.Fatalf("GET with correct fingerprint failed: %v", err)
+	}
+	resp.Body.Close()
+	// Any HTTP response (even 404) means the TLS handshake succeeded.
+}
+
+func TestHTTPListenerTLS_WrongFingerprint(t *testing.T) {
+	tlsCfg, _, _ := makeSelfSignedCert(t)
+	c := newTestConsoleHTTP(t, newServerKey(t))
+	addr := tlsListenerAddr(t, c, tlsCfg)
+	t.Cleanup(func() { _ = c.StopHTTPListener(addr) })
+
+	wrongFP := strings.Repeat("aa", 32) // valid hex length but wrong value
+	client := tlsPinClient(wrongFP)
+	_, err := client.Get("https://" + addr + "/")
+	if err == nil {
+		t.Fatal("expected TLS handshake error with wrong fingerprint, got nil")
+	}
+}
+
+func TestHTTPListenerTLS_PlainClientRejected(t *testing.T) {
+	tlsCfg, _, _ := makeSelfSignedCert(t)
+	c := newTestConsoleHTTP(t, newServerKey(t))
+	addr := tlsListenerAddr(t, c, tlsCfg)
+	t.Cleanup(func() { _ = c.StopHTTPListener(addr) })
+
+	// Plain http.Client against TLS listener — the server rejects the plain
+	// HTTP request.  Go's TLS stack sends back an HTTP/1.0 400 Bad Request,
+	// so the transport-level error may be nil.  We accept either a non-nil
+	// error OR a 4xx/5xx response status as proof of rejection.
+	plainClient := &http.Client{Timeout: 2 * time.Second}
+	resp, err := plainClient.Get("http://" + addr + "/")
+	if err != nil {
+		// Transport-level error is fine — request was rejected.
+		return
+	}
+	resp.Body.Close()
+	if resp.StatusCode < 400 {
+		t.Fatalf("expected rejection (4xx/5xx or error), got status %d", resp.StatusCode)
 	}
 }

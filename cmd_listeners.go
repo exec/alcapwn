@@ -46,7 +46,7 @@ func (c *Console) cmdListen(args []string) {
 				}
 			}
 		}
-		if err := c.StartHTTPListener(addr, registerPath, beaconPath, downloadDir); err != nil {
+		if err := c.StartHTTPListener(addr, registerPath, beaconPath, downloadDir, nil); err != nil {
 			fmt.Printf("[!] %v\n", err)
 			return
 		}
