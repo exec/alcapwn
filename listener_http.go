@@ -28,10 +28,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -52,6 +54,7 @@ type httpListenerEntry struct {
 	downloadDir    string // directory to serve files from (can be empty = disabled)
 	downloadToken  string // random 6-char token for download path obscurity
 	allowedFiles   map[string]bool // whitelist of filenames that can be downloaded
+	useTLS         bool            // true when served over TLS
 }
 
 type httpListenerRegistry struct {
@@ -97,7 +100,7 @@ func (r *httpListenerRegistry) all() []string {
 // registerPath and beaconPath are the URI prefixes agents use (e.g. "/register"
 // and "/beacon/").  Pass empty strings to use the defaults.
 // downloadDir is an optional directory to serve static files from (e.g. generated agents).
-func (c *Console) StartHTTPListener(addr, registerPath, beaconPath, downloadDir string) error {
+func (c *Console) StartHTTPListener(addr, registerPath, beaconPath, downloadDir string, tlsCfg *tls.Config) error {
 	if registerPath == "" {
 		registerPath = "/register"
 	}
@@ -137,17 +140,48 @@ func (c *Console) StartHTTPListener(addr, registerPath, beaconPath, downloadDir 
 		downloadPath:  downloadPath,
 		downloadDir:   downloadDir,
 		downloadToken: downloadToken,
-		allowedFiles:   make(map[string]bool),
+		allowedFiles:  make(map[string]bool),
+		useTLS:        tlsCfg != nil,
 	}
 	if !c.httpListeners.add(addr, entry) {
 		return fmt.Errorf("already listening on %s", addr)
 	}
 
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			c.printer.Notify("[!] HTTP listener %s: %v", addr, err)
+		var serveErr error
+		if tlsCfg != nil {
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				c.printer.Notify("[!] HTTPS listener %s: %v", addr, err)
+				c.httpListeners.remove(addr)
+				return
+			}
+			// Record the real bound address (important when addr uses port :0).
+			// Re-key the registry entry from the original addr ("127.0.0.1:0") to
+			// the OS-assigned address so lookups and StopHTTPListener work correctly.
+			realAddr := ln.Addr().String()
+			if realAddr != addr {
+				c.httpListeners.mu.Lock()
+				if e, ok := c.httpListeners.listeners[addr]; ok {
+					e.addr = realAddr
+					delete(c.httpListeners.listeners, addr)
+					c.httpListeners.listeners[realAddr] = e
+				}
+				c.httpListeners.mu.Unlock()
+			}
+			tlsLn := tls.NewListener(ln, tlsCfg)
+			serveErr = srv.Serve(tlsLn)
+			if serveErr != nil && serveErr != http.ErrServerClosed {
+				c.printer.Notify("[!] HTTPS listener %s: %v", realAddr, serveErr)
+			}
+			c.httpListeners.remove(realAddr)
+		} else {
+			serveErr = srv.ListenAndServe()
+			if serveErr != nil && serveErr != http.ErrServerClosed {
+				c.printer.Notify("[!] HTTP listener %s: %v", addr, serveErr)
+			}
+			c.httpListeners.remove(addr)
 		}
-		c.httpListeners.remove(addr)
 	}()
 	return nil
 }
@@ -222,12 +256,11 @@ func (c *Console) handleHTTPRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Allocate session; use client IP as RemoteAddr.
+	// Allocate session; always use the real TCP peer address as RemoteAddr.
+	// X-Forwarded-For is intentionally ignored: it is attacker-controlled and
+	// cannot be trusted when the HTTP listener is directly internet-facing.
 	token := newHTTPToken()
 	remoteAddr := r.RemoteAddr
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		remoteAddr = strings.SplitN(fwd, ",", 2)[0] + ":0"
-	}
 	sess := c.registry.AllocateHTTP(token, remoteAddr)
 	if sess == nil {
 		http.Error(w, "session limit reached", http.StatusServiceUnavailable)
@@ -456,7 +489,9 @@ func (c *Console) handleHTTPDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if filename == "" || strings.Contains(filename, "..") {
+	// Strip any directory components — only the base filename is permitted.
+	filename = filepath.Base(filename)
+	if filename == "" || filename == "." || filename == "/" {
 		http.Error(w, "invalid filename", http.StatusBadRequest)
 		return
 	}
