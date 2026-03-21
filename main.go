@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"os"
@@ -51,21 +50,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	var tlsCfg *tls.Config
-	var fingerprint, fingerprintHex string
-
-	if useTLS {
-		var err error
-		tlsCfg, fingerprint, err = generateEphemeralTLSConfig()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[!] Failed to generate TLS certificate: %v\n", err)
-			os.Exit(1)
-		}
-		fingerprintHex = strings.ToLower(strings.ReplaceAll(fingerprint, ":", ""))
-
-		fmt.Println("[*] TLS enabled — ephemeral cert fingerprint:")
-		fmt.Printf("    %s\n", fingerprint)
+	// Always generate the ephemeral TLS cert (replaces lines 54–68, before the
+	// first err := on line 74, so := is safe — no prior err in scope here).
+	// fingerprintHex is used by HTTP TLS agents regardless of whether --tls is set.
+	// opts.tlsEnabled (set from useTLS below) controls TCP PTY session TLS reconnect.
+	tlsCfg, fingerprint, err := generateEphemeralTLSConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[!] Failed to generate TLS certificate: %v\n", err)
+		os.Exit(1)
 	}
+	fingerprintHex := strings.ToLower(strings.ReplaceAll(fingerprint, ":", ""))
+	fmt.Printf("[*] Ephemeral TLS cert fingerprint: %s\n    (embed with --tls when using HTTP listeners)\n", fingerprint)
 
 	// Load (or generate) the server's long-term X25519 key used to encrypt
 	// agent connections.  The fingerprint is displayed so operators can embed
