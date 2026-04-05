@@ -386,15 +386,16 @@ WantedBy=multi-user.target" > /etc/systemd/system/alcapwn.service && systemctl e
 	sess.mu.Lock()
 	isRoot := sess.IsRoot // live state — set by exploit auto or post-recon init
 	sudoNopasswd := false
-	if !isRoot && sess.Findings != nil {
+	findings := sess.Findings // capture under lock for use after unlock
+	if !isRoot && findings != nil {
 		// Also accept recon-snapshot root (uid=0 user) as sufficient.
-		if sess.Findings.User != nil && *sess.Findings.User == "root" {
+		if findings.User != nil && *findings.User == "root" {
 			isRoot = true
 		}
-		if sess.Findings.UID != nil && *sess.Findings.UID == "0" {
+		if findings.UID != nil && *findings.UID == "0" {
 			isRoot = true
 		}
-		for _, entry := range sess.Findings.SudoNopasswd {
+		for _, entry := range findings.SudoNopasswd {
 			if entry.Command == "ALL" || entry.Command == "/bin/bash" || entry.Command == "/bin/sh" {
 				sudoNopasswd = true
 			}
@@ -416,8 +417,8 @@ WantedBy=multi-user.target" > /etc/systemd/system/alcapwn.service && systemctl e
 
 	// Get OS from session metadata or use "unknown"
 	osName := "unknown"
-	if sess.Findings != nil && sess.Findings.OS != nil {
-		osName = *sess.Findings.OS
+	if findings != nil && findings.OS != nil {
+		osName = *findings.OS
 	}
 
 	// Generate profile name
