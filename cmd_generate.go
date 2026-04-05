@@ -23,6 +23,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -492,13 +493,7 @@ func (c *Console) getListenerByIndex(idx int) (listenerInfo, bool) {
 
 // splitHostPort splits "host:port" into host and port parts.
 func splitHostPort(addr string) (host, port string, err error) {
-	parts := strings.Split(addr, ":")
-	if len(parts) < 2 {
-		return "", "", fmt.Errorf("invalid address: %s", addr)
-	}
-	host = strings.Join(parts[:len(parts)-1], ":")
-	port = parts[len(parts)-1]
-	return host, port, nil
+	return net.SplitHostPort(addr)
 }
 
 // buildGenerateLDFlags constructs the -ldflags string for the agent binary.

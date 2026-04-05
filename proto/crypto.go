@@ -25,7 +25,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -35,6 +34,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"golang.org/x/crypto/hkdf"
 )
 
 // CryptoSession holds AES-256-GCM ciphers and monotonic nonce counters for one
@@ -209,12 +210,24 @@ func WriteMsgEncrypted(w io.Writer, cs *CryptoSession, t MsgType, data any) erro
 	}
 	cs.writeMu.Lock()
 	defer cs.writeMu.Unlock()
-	ciphertext := cs.sendCipher.Seal(nil, cs.sendNonce[:], plaintext, nil)
-	incrementNonce(&cs.sendNonce)
+
+	// Compute the ciphertext length before sealing so the 4-byte length prefix
+	// can be passed as AAD, binding the framing to the authenticated ciphertext.
+	// GCM ciphertext length = plaintext length + GCM tag overhead (16 bytes).
+	ctLen := uint32(len(plaintext) + cs.sendCipher.Overhead())
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], ctLen)
+
+	ciphertext := cs.sendCipher.Seal(nil, cs.sendNonce[:], plaintext, lenBuf[:])
 
 	frame := make([]byte, 4+len(ciphertext))
-	binary.BigEndian.PutUint32(frame[0:4], uint32(len(ciphertext)))
+	copy(frame[0:4], lenBuf[:])
 	copy(frame[4:], ciphertext)
+
+	if err := incrementNonce(&cs.sendNonce); err != nil {
+		return fmt.Errorf("crypto: send nonce exhausted: %w", err)
+	}
+
 	_, err = w.Write(frame)
 	return err
 }
@@ -238,11 +251,13 @@ func ReadMsgEncrypted(r io.Reader, cs *CryptoSession) (*Envelope, error) {
 		return nil, err
 	}
 
-	plaintext, err := cs.recvCipher.Open(nil, cs.recvNonce[:], ciphertext, nil)
+	plaintext, err := cs.recvCipher.Open(nil, cs.recvNonce[:], ciphertext, lenBuf[:])
 	if err != nil {
 		return nil, fmt.Errorf("crypto: decrypt failed: %w", err)
 	}
-	incrementNonce(&cs.recvNonce)
+	if err := incrementNonce(&cs.recvNonce); err != nil {
+		return nil, fmt.Errorf("crypto: recv nonce exhausted: %w", err)
+	}
 
 	var env Envelope
 	if err := json.Unmarshal(plaintext, &env); err != nil {
@@ -261,21 +276,58 @@ func FingerprintKey(pubBytes []byte) string {
 // LoadOrCreateServerKey loads the server's long-term X25519 private key from
 // path, or generates and persists a new one if the file does not exist.
 // Returns the private key and its public-key fingerprint (lowercase hex SHA-256).
+//
+// Error behavior:
+//   - File does not exist: generate a new key and persist it. Return error if
+//     the directory cannot be created or the file cannot be written.
+//   - File exists but is corrupt (wrong length or invalid key bytes): return
+//     an explicit error. Never silently regenerate — the operator must
+//     investigate.
+//   - File exists and is valid: load and return.
 func LoadOrCreateServerKey(path string) (*ecdh.PrivateKey, string, error) {
-	if data, err := os.ReadFile(path); err == nil && len(data) == 32 {
-		if priv, err := ecdh.X25519().NewPrivateKey(data); err == nil {
-			fp := FingerprintKey(priv.PublicKey().Bytes())
-			return priv, fp, nil
+	data, err := os.ReadFile(path)
+	if err == nil {
+		// File exists — it must parse correctly or we fail.
+		if len(data) != 32 {
+			return nil, "", fmt.Errorf("crypto: server key file %q has invalid length %d (want 32)", path, len(data))
 		}
+		priv, err := ecdh.X25519().NewPrivateKey(data)
+		if err != nil {
+			return nil, "", fmt.Errorf("crypto: server key file %q contains invalid key: %w", path, err)
+		}
+		// Zero the raw bytes after parsing.
+		for i := range data {
+			data[i] = 0
+		}
+		fp := FingerprintKey(priv.PublicKey().Bytes())
+		return priv, fp, nil
+	}
+	if !os.IsNotExist(err) {
+		// File exists but unreadable (permission error, etc.).
+		return nil, "", fmt.Errorf("crypto: read server key %q: %w", path, err)
 	}
 
+	// File does not exist — generate a new key.
 	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, "", fmt.Errorf("crypto: generate server key: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err == nil {
-		_ = os.WriteFile(path, priv.Bytes(), 0600)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, "", fmt.Errorf("crypto: create key directory %q: %w", filepath.Dir(path), err)
+	}
+
+	keyBytes := priv.Bytes()
+	if err := os.WriteFile(path, keyBytes, 0600); err != nil {
+		// Zero key bytes before returning the error.
+		for i := range keyBytes {
+			keyBytes[i] = 0
+		}
+		return nil, "", fmt.Errorf("crypto: write server key %q: %w", path, err)
+	}
+	// Zero the raw bytes after writing.
+	for i := range keyBytes {
+		keyBytes[i] = 0
 	}
 
 	fp := FingerprintKey(priv.PublicKey().Bytes())
@@ -286,30 +338,28 @@ func LoadOrCreateServerKey(path string) (*ecdh.PrivateKey, string, error) {
 
 // deriveKeys derives two independent AES-256-GCM keys from the ECDH shared
 // secret using HKDF-SHA256.  Returns (serverToClient, clientToServer).
+//
+// The salt is serverPub‖agentPub. Each key is derived with a distinct info
+// string via a separate HKDF instance (Extract + single Expand block).
+// This is equivalent to the previous hand-rolled Extract/Expand and produces
+// identical output — verified by TestHKDF_backwardsCompatible.
 func deriveKeys(shared, serverPub, agentPub []byte) (key1, key2 [32]byte, err error) {
 	salt := make([]byte, len(serverPub)+len(agentPub))
 	copy(salt, serverPub)
 	copy(salt[len(serverPub):], agentPub)
 
-	prk := hkdfExtract(salt, shared)
-	copy(key1[:], hkdfExpand(prk, []byte("alcapwn v3 server-to-client")))
-	copy(key2[:], hkdfExpand(prk, []byte("alcapwn v3 client-to-server")))
+	r1 := hkdf.New(sha256.New, shared, salt, []byte("alcapwn v3 server-to-client"))
+	if _, err = io.ReadFull(r1, key1[:]); err != nil {
+		err = fmt.Errorf("crypto: HKDF key1: %w", err)
+		return
+	}
+
+	r2 := hkdf.New(sha256.New, shared, salt, []byte("alcapwn v3 client-to-server"))
+	if _, err = io.ReadFull(r2, key2[:]); err != nil {
+		err = fmt.Errorf("crypto: HKDF key2: %w", err)
+		return
+	}
 	return
-}
-
-// hkdfExtract implements HKDF-Extract(salt, ikm) → PRK (RFC 5869 §2.2).
-func hkdfExtract(salt, ikm []byte) []byte {
-	mac := hmac.New(sha256.New, salt)
-	mac.Write(ikm)
-	return mac.Sum(nil)
-}
-
-// hkdfExpand implements one 32-byte block of HKDF-Expand(prk, info, 32) (RFC 5869 §2.3).
-func hkdfExpand(prk, info []byte) []byte {
-	mac := hmac.New(sha256.New, prk)
-	mac.Write(info)
-	mac.Write([]byte{0x01})
-	return mac.Sum(nil)
 }
 
 func newCryptoSession(sendKey, recvKey [32]byte) (*CryptoSession, error) {
@@ -332,13 +382,40 @@ func newCryptoSession(sendKey, recvKey [32]byte) (*CryptoSession, error) {
 	return &CryptoSession{sendCipher: send, recvCipher: recv}, nil
 }
 
-func incrementNonce(n *[12]byte) {
+// errNonceOverflow is returned when the 12-byte nonce is exhausted (all 0xFF).
+var errNonceOverflow = fmt.Errorf("crypto: nonce overflow — all 2^96 values exhausted")
+
+// errNonceLimit is returned when the 32-bit invocation counter (low 4 bytes)
+// reaches 2^32, per NIST SP 800-38D guidance for AES-GCM deterministic nonces.
+var errNonceLimit = fmt.Errorf("crypto: nonce limit reached — 2^32 invocations per NIST SP 800-38D")
+
+func incrementNonce(n *[12]byte) error {
+	// Check the NIST 2^32 practical limit BEFORE incrementing. The counter
+	// occupies bytes 8-11 (big-endian). If all four are 0xFF, the next
+	// value would be 0x100000000 which exceeds 2^32-1.
+	if n[8] == 0xff && n[9] == 0xff && n[10] == 0xff && n[11] == 0xff {
+		return errNonceLimit
+	}
+
+	// Check for full 96-bit overflow: all bytes 0xFF.
+	allFF := true
+	for _, b := range n {
+		if b != 0xff {
+			allFF = false
+			break
+		}
+	}
+	if allFF {
+		return errNonceOverflow
+	}
+
 	for i := 11; i >= 0; i-- {
 		n[i]++
 		if n[i] != 0 {
 			break
 		}
 	}
+	return nil
 }
 
 // marshalEnvelope serialises data into a typed Envelope and returns the JSON bytes.

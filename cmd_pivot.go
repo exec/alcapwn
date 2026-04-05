@@ -146,7 +146,7 @@ func (c *Console) proxyRelay(sess *Session, clientConn net.Conn, target string) 
 	// Dispatch TaskForward to agent in background; it blocks until relay ends.
 	go func() {
 		agentDispatch(sess, proto.Task{
-			ID:     agentTaskID("fwd", target),
+			ID:     agentTaskID("fwd"),
 			Kind:   proto.TaskForward,
 			Target: target,
 			Relay:  relayAddr,
@@ -406,7 +406,7 @@ func (c *Console) cmdScan(args []string) {
 	fmt.Printf("[*] Scanning %s via agent %d...\n", cidr, id)
 
 	res, err := agentDispatch(sess, proto.Task{
-		ID:        agentTaskID("scan", cidr),
+		ID:        agentTaskID("scan"),
 		Kind:      proto.TaskScan,
 		Target:    cidr,
 		Ports:     ports,
