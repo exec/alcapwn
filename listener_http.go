@@ -375,7 +375,7 @@ func (c *Console) handleHTTPPoll(w http.ResponseWriter, sess *Session) {
 
 	// Record in-flight task so the next POST /beacon can match the result.
 	sess.httpInflightMu.Lock()
-	sess.httpInFlight = &req
+	sess.httpInFlight[req.task.ID] = &req
 	sess.httpInflightMu.Unlock()
 
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -418,11 +418,13 @@ func (c *Console) handleHTTPResult(w http.ResponseWriter, r *http.Request, sess 
 	}
 
 	sess.httpInflightMu.Lock()
-	req := sess.httpInFlight
-	sess.httpInFlight = nil
+	req, ok := sess.httpInFlight[res.TaskID]
+	if ok {
+		delete(sess.httpInFlight, res.TaskID)
+	}
 	sess.httpInflightMu.Unlock()
 
-	if req != nil && req.task.ID == res.TaskID {
+	if ok && req != nil {
 		req.resultCh <- res
 	}
 	w.WriteHeader(http.StatusOK)
