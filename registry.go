@@ -46,8 +46,8 @@ type Session struct {
 	// TCP agents leave these nil/empty.
 	HTTPToken     string               // URL token for /beacon/{token}; also key in registry.httpTokens
 	httpCS        *proto.CryptoSession // per-session AES-256-GCM state for HTTP transport
-	httpInFlight  *agentTaskReq        // task currently outstanding to the HTTP agent
-	httpInflightMu sync.Mutex          // guards httpInFlight
+	httpInFlight   map[string]*agentTaskReq // in-flight tasks keyed by task ID
+	httpInflightMu sync.Mutex              // guards httpInFlight
 	// drain goroutine control — guarded by mu.
 	// Non-nil only while a drain goroutine is running (session backgrounded).
 	drainStop chan struct{} // close to stop the drain goroutine
@@ -106,12 +106,13 @@ func (r *Registry) Allocate(conn net.Conn, useTLS bool) *Session {
 	}
 
 	sess := &Session{
-		ID:         id,
-		Conn:       conn,
-		RemoteAddr: conn.RemoteAddr().String(),
-		StartTime:  time.Now(),
-		State:      SessionStateActive,
-		TLS:        useTLS,
+		ID:           id,
+		Conn:         conn,
+		RemoteAddr:   conn.RemoteAddr().String(),
+		StartTime:    time.Now(),
+		State:        SessionStateActive,
+		TLS:          useTLS,
+		httpInFlight: make(map[string]*agentTaskReq),
 	}
 	r.sessions[id] = sess
 	return sess
@@ -159,11 +160,12 @@ func (r *Registry) AllocateHTTP(token, remoteAddr string) *Session {
 	}
 
 	sess := &Session{
-		ID:         id,
-		HTTPToken:  token,
-		RemoteAddr: remoteAddr,
-		StartTime:  time.Now(),
-		State:      SessionStateActive,
+		ID:           id,
+		HTTPToken:    token,
+		RemoteAddr:   remoteAddr,
+		StartTime:    time.Now(),
+		State:        SessionStateActive,
+		httpInFlight: make(map[string]*agentTaskReq),
 	}
 	r.sessions[id] = sess
 	r.httpTokens.Store(token, sess)
