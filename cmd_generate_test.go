@@ -5,6 +5,41 @@ import (
 	"testing"
 )
 
+// ── TestSplitHostPort ────────────────────────────────────────────────────────
+
+func TestSplitHostPort_IPv4(t *testing.T) {
+	host, port, err := splitHostPort("10.0.0.1:443")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if host != "10.0.0.1" {
+		t.Errorf("host = %q, want %q", host, "10.0.0.1")
+	}
+	if port != "443" {
+		t.Errorf("port = %q, want %q", port, "443")
+	}
+}
+
+func TestSplitHostPort_IPv6(t *testing.T) {
+	host, port, err := splitHostPort("[::1]:443")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if host != "::1" {
+		t.Errorf("host = %q, want %q", host, "::1")
+	}
+	if port != "443" {
+		t.Errorf("port = %q, want %q", port, "443")
+	}
+}
+
+func TestSplitHostPort_NoPort(t *testing.T) {
+	_, _, err := splitHostPort("10.0.0.1")
+	if err == nil {
+		t.Fatal("expected error for address without port")
+	}
+}
+
 // ── TestLookupTarget ──────────────────────────────────────────────────────────
 
 func TestLookupTarget_linuxAmd64(t *testing.T) {
