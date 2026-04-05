@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -140,6 +142,57 @@ func TestLoadOrCreateServerKey_fingerprintMatchesKey(t *testing.T) {
 	wantFP := FingerprintKey(key.PublicKey().Bytes())
 	if fp != wantFP {
 		t.Fatalf("fingerprint mismatch: got %q, want %q", fp, wantFP)
+	}
+}
+
+func TestLoadOrCreateServerKey_corruptFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server_key.bin")
+
+	// Write 31 bytes (wrong length — valid X25519 key is exactly 32 bytes).
+	if err := os.WriteFile(path, make([]byte, 31), 0600); err != nil {
+		t.Fatalf("write corrupt file: %v", err)
+	}
+
+	_, _, err := LoadOrCreateServerKey(path)
+	if err == nil {
+		t.Fatal("expected error for corrupt key file (31 bytes), got nil — key was silently regenerated")
+	}
+}
+
+func TestLoadOrCreateServerKey_corruptFileContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server_key.bin")
+
+	// Write 32 bytes of zeros — might or might not be a valid X25519 key
+	// depending on the implementation. The important thing is that if
+	// NewPrivateKey rejects it, we get an error (not silent regen).
+	// Use 33 bytes to ensure length check triggers.
+	if err := os.WriteFile(path, make([]byte, 33), 0600); err != nil {
+		t.Fatalf("write corrupt file: %v", err)
+	}
+
+	_, _, err := LoadOrCreateServerKey(path)
+	if err == nil {
+		t.Fatal("expected error for corrupt key file (33 bytes), got nil — key was silently regenerated")
+	}
+}
+
+func TestLoadOrCreateServerKey_writeFail(t *testing.T) {
+	// Create a read-only directory. WriteFile inside it should fail.
+	dir := t.TempDir()
+	roDir := filepath.Join(dir, "readonly")
+	if err := os.Mkdir(roDir, 0500); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Attempt to create a key file inside the read-only directory.
+	// On some systems, MkdirAll of an existing dir succeeds even if read-only,
+	// but WriteFile should fail because the directory is not writable.
+	path := filepath.Join(roDir, "server_key.bin")
+
+	_, _, err := LoadOrCreateServerKey(path)
+	if err == nil {
+		t.Fatal("expected error when key file cannot be written, got nil")
 	}
 }
 
@@ -324,6 +377,42 @@ func TestEncrypted_multipleMessages(t *testing.T) {
 	}
 	if err := <-writeErr; err != nil {
 		t.Fatalf("write error: %v", err)
+	}
+}
+
+func TestEncrypted_AADTamperedLength(t *testing.T) {
+	// Verify that the 4-byte length prefix is bound as AAD to GCM.
+	// Strategy: write an encrypted message, capture the wire bytes, then
+	// construct a new frame with the *same* ciphertext but a different length
+	// prefix (followed by enough padding to satisfy ReadFull). If AAD is
+	// properly bound, GCM Open must reject it.
+	serverPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	_, _, sCS, cCS := doHandshakeWithConns(t, serverPriv)
+
+	// Encrypt a message to a buffer.
+	var buf bytes.Buffer
+	if err := WriteMsgEncrypted(&buf, sCS, MsgPing, struct{}{}); err != nil {
+		t.Fatalf("WriteMsgEncrypted: %v", err)
+	}
+
+	wire := buf.Bytes()
+	origLen := binary.BigEndian.Uint32(wire[0:4])
+	ciphertext := wire[4:]
+
+	// Build a tampered frame with a different length prefix but the same
+	// ciphertext. The new length is origLen+1, and we append one zero byte
+	// so ReadFull reads origLen+1 bytes total (the real ciphertext + 1 junk).
+	tampered := make([]byte, 4+len(ciphertext)+1)
+	binary.BigEndian.PutUint32(tampered[0:4], origLen+1)
+	copy(tampered[4:], ciphertext)
+	tampered[len(tampered)-1] = 0x00
+
+	_, err = ReadMsgEncrypted(bytes.NewReader(tampered), cCS)
+	if err == nil {
+		t.Fatal("expected decryption error when length prefix is tampered (AAD mismatch), got nil")
 	}
 }
 
@@ -586,7 +675,9 @@ func TestConcurrentWrites(t *testing.T) {
 
 func TestIncrementNonce_basic(t *testing.T) {
 	var n [12]byte
-	incrementNonce(&n)
+	if err := incrementNonce(&n); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if n[11] != 1 {
 		t.Fatalf("expected n[11]=1 after first increment, got %d", n[11])
 	}
@@ -595,23 +686,82 @@ func TestIncrementNonce_basic(t *testing.T) {
 func TestIncrementNonce_carry(t *testing.T) {
 	var n [12]byte
 	n[11] = 0xff
-	incrementNonce(&n)
+	if err := incrementNonce(&n); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if n[11] != 0 || n[10] != 1 {
 		t.Fatalf("carry not propagated: n[10]=%d n[11]=%d", n[10], n[11])
 	}
 }
 
-func TestIncrementNonce_allOnes(t *testing.T) {
+func TestIncrementNonce_overflow(t *testing.T) {
 	var n [12]byte
 	for i := range n {
 		n[i] = 0xff
 	}
-	incrementNonce(&n)
-	// Should wrap to all zeros.
+	err := incrementNonce(&n)
+	if err == nil {
+		t.Fatal("expected error on nonce overflow (all-0xFF), got nil")
+	}
+	// Nonce must NOT have been modified on error.
 	for i, b := range n {
-		if b != 0 {
-			t.Fatalf("expected all-zero after overflow, byte %d = %d", i, b)
+		if b != 0xff {
+			t.Fatalf("nonce was modified despite overflow error: byte %d = %d", i, b)
 		}
+	}
+}
+
+func TestIncrementNonce_nearLimit(t *testing.T) {
+	// NIST SP 800-38D recommends at most 2^32 invocations per key for a random
+	// nonce. We enforce this as a practical limit using the low 4 bytes of the
+	// big-endian nonce (bytes 8-11).
+	var n [12]byte
+	// Set bytes 8-11 to 0xFFFFFFFF (2^32 - 1) — the last allowed value.
+	n[8] = 0xff
+	n[9] = 0xff
+	n[10] = 0xff
+	n[11] = 0xff
+	// The next increment would produce counter value 2^32 (0x100000000),
+	// which exceeds the NIST limit.
+	err := incrementNonce(&n)
+	if err == nil {
+		t.Fatal("expected error at 2^32 invocation limit, got nil")
+	}
+}
+
+// ── HKDF backwards compatibility ─────────────────────────────────────────────
+
+func TestHKDF_backwardsCompatible(t *testing.T) {
+	// Fixed inputs — the derived keys must match these exact values forever
+	// (changing them means a wire-format break).
+	shared := make([]byte, 32)
+	serverPub := make([]byte, 32)
+	agentPub := make([]byte, 32)
+	for i := range shared {
+		shared[i] = byte(i + 1)
+		serverPub[i] = byte(i + 50)
+		agentPub[i] = byte(i + 100)
+	}
+
+	k1, k2, err := deriveKeys(shared, serverPub, agentPub)
+	if err != nil {
+		t.Fatalf("deriveKeys: %v", err)
+	}
+
+	// These hex values were captured from the hand-rolled HKDF implementation
+	// before the switch to golang.org/x/crypto/hkdf. If these change, the new
+	// implementation is NOT backwards-compatible.
+	k1hex := fmt.Sprintf("%x", k1)
+	k2hex := fmt.Sprintf("%x", k2)
+
+	const wantK1 = "f0c72edb12a51b4935cba434ab38f437303b86363e8bd9547bb52fe2dc2109f0"
+	const wantK2 = "15eb06a9fec9af60bcc3ebb88380b2ac93e70b91ae003f5159314c48650bc3fa"
+
+	if k1hex != wantK1 {
+		t.Fatalf("key1 mismatch (wire-format break!):\n  want: %s\n   got: %s", wantK1, k1hex)
+	}
+	if k2hex != wantK2 {
+		t.Fatalf("key2 mismatch (wire-format break!):\n  want: %s\n   got: %s", wantK2, k2hex)
 	}
 }
 
@@ -905,4 +1055,104 @@ func TestFullRoundTrip(t *testing.T) {
 
 	sConn.Close()
 	cConn.Close()
+}
+
+// ── Security property tests ──────────────────────────────────────────────────
+
+// TestEncrypted_nonceDeSynchronization verifies fail-closed behavior when
+// sender and receiver nonces get out of sync. The sender sends two messages
+// but the receiver reads only one (advancing its nonce once). The next read
+// must fail because the nonces are desynchronized.
+func TestEncrypted_nonceDeSynchronization(t *testing.T) {
+	serverPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	_, _, sCS, cCS := doHandshakeWithConns(t, serverPriv)
+
+	// Encrypt two messages into separate buffers.
+	var buf1, buf2 bytes.Buffer
+	if err := WriteMsgEncrypted(&buf1, sCS, MsgPing, struct{}{}); err != nil {
+		t.Fatalf("write msg 1: %v", err)
+	}
+	if err := WriteMsgEncrypted(&buf2, sCS, MsgPing, struct{}{}); err != nil {
+		t.Fatalf("write msg 2: %v", err)
+	}
+
+	// Receiver reads only message 1 (advancing recvNonce to 1).
+	if _, err := ReadMsgEncrypted(&buf1, cCS); err != nil {
+		t.Fatalf("read msg 1: %v", err)
+	}
+
+	// Skip message 2 entirely. Now write message 3 (sender nonce = 2).
+	var buf3 bytes.Buffer
+	if err := WriteMsgEncrypted(&buf3, sCS, MsgPing, struct{}{}); err != nil {
+		t.Fatalf("write msg 3: %v", err)
+	}
+
+	// Receiver tries to read message 3 but its recvNonce is 1 (expects nonce 1),
+	// while the ciphertext was sealed with nonce 2. GCM must reject it.
+	_, err = ReadMsgEncrypted(&buf3, cCS)
+	if err == nil {
+		t.Fatal("expected decryption error due to nonce desynchronization, got nil — fail-open!")
+	}
+}
+
+// TestEncrypted_bitFlipTamper captures valid ciphertext, flips one bit in the
+// ciphertext body (not the GCM tag, not the length prefix), and verifies that
+// GCM authentication rejects it.
+func TestEncrypted_bitFlipTamper(t *testing.T) {
+	serverPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	_, _, sCS, cCS := doHandshakeWithConns(t, serverPriv)
+
+	var buf bytes.Buffer
+	if err := WriteMsgEncrypted(&buf, sCS, MsgPing, struct{}{}); err != nil {
+		t.Fatalf("WriteMsgEncrypted: %v", err)
+	}
+
+	wire := buf.Bytes()
+	// wire = [4-byte length][ciphertext]. Flip a bit in the first byte of
+	// the ciphertext payload (byte 4), which is the encrypted content.
+	if len(wire) < 5 {
+		t.Fatalf("wire too short: %d bytes", len(wire))
+	}
+	wire[4] ^= 0x01 // flip low bit of first ciphertext byte
+
+	_, err = ReadMsgEncrypted(bytes.NewReader(wire), cCS)
+	if err == nil {
+		t.Fatal("expected GCM authentication error after bit flip, got nil")
+	}
+}
+
+// TestEncrypted_messageReorder writes two messages A and B, swaps them in the
+// buffer (B before A), and verifies that reading either fails. This confirms
+// that nonce-counter binding prevents message reordering.
+func TestEncrypted_messageReorder(t *testing.T) {
+	serverPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	_, _, sCS, cCS := doHandshakeWithConns(t, serverPriv)
+
+	var bufA, bufB bytes.Buffer
+	if err := WriteMsgEncrypted(&bufA, sCS, MsgPing, struct{}{}); err != nil {
+		t.Fatalf("write A: %v", err)
+	}
+	if err := WriteMsgEncrypted(&bufB, sCS, MsgPong, struct{}{}); err != nil {
+		t.Fatalf("write B: %v", err)
+	}
+
+	// Construct reordered stream: B first, then A.
+	var reordered bytes.Buffer
+	reordered.Write(bufB.Bytes())
+	reordered.Write(bufA.Bytes())
+
+	// Reading the first message (B at nonce 1, but receiver expects nonce 0) must fail.
+	_, err = ReadMsgEncrypted(&reordered, cCS)
+	if err == nil {
+		t.Fatal("expected decryption error when messages are reordered, got nil")
+	}
 }
