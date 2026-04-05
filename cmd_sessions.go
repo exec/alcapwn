@@ -720,6 +720,33 @@ func stripDangerousAnsi(s string) string {
 	var result strings.Builder
 	var i int
 	for i < len(s) {
+		// Preserve UTF-8 multibyte sequences: lead bytes 0xC0-0xFF introduce
+		// 2-4 byte sequences whose continuation bytes (0x80-0xBF) overlap C1.
+		if s[i] >= 0xc0 {
+			// Determine the length of the UTF-8 sequence from the lead byte.
+			seqLen := 1
+			switch {
+			case s[i] < 0xe0:
+				seqLen = 2
+			case s[i] < 0xf0:
+				seqLen = 3
+			default:
+				seqLen = 4
+			}
+			end := i + seqLen
+			if end > len(s) {
+				end = len(s)
+			}
+			result.WriteString(s[i:end])
+			i = end
+			continue
+		}
+		// Strip C1 control codes (0x80-0x9F) — 8-bit equivalents of dangerous ESC sequences.
+		// These have no legitimate use in UTF-8 terminal output.
+		if s[i] >= 0x80 && s[i] <= 0x9f {
+			i++
+			continue
+		}
 		if s[i] == '\x1b' && i+1 < len(s) {
 			if s[i+1] == '[' {
 				// CSI sequence - detect type
@@ -771,9 +798,22 @@ func stripDangerousAnsi(s string) string {
 				}
 				continue
 			}
-			if s[i+1] == '_' || s[i+1] == '^' || s[i+1] == 'X' {
-				// APC, PM, SOS - skip entirely
+			if s[i+1] == '_' || s[i+1] == '^' || s[i+1] == 'X' || s[i+1] == 'P' {
+				// APC, PM, SOS, DCS — skip entire sequence body up to ST (\x1b\) or end of string
 				i += 2
+				foundST := false
+				for i < len(s)-1 {
+					if s[i] == 0x1b && s[i+1] == '\\' {
+						i += 2
+						foundST = true
+						break
+					}
+					i++
+				}
+				// If we reached end of string without finding ST, skip remaining byte
+				if !foundST && i < len(s) {
+					i = len(s)
+				}
 				continue
 			}
 		}
@@ -1780,7 +1820,7 @@ func (c *Console) cmdCreds(args []string) {
 		clean = strings.TrimRight(strings.Join(lines, "\n"), "\r\n\t ")
 		if clean != "" {
 			fmt.Println(stripDangerousAnsi(clean))
-			fmt.Fprintln(&buf, clean) // export to buffer unstripped (file output is safe)
+			fmt.Fprintln(&buf, stripDangerousAnsi(clean))
 		}
 	}
 	fmt.Println()
