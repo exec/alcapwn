@@ -1,0 +1,1 @@
+{"id":"suid_system_control","category":"SUID_CUSTOM","binary":"system-control","cve":null,"exploitation":["{{binary}}"],"notes":"TryHackMe/Advent of Cyber. Prompts for command; enter /bin/bash -p.","source":"tryhackme/Advent of Cyber 1","tags":["suid","ctf"],"severity":"high"}

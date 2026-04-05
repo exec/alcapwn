@@ -1,0 +1,11 @@
+{
+  "id": "suid_zsh",
+  "category": "SUID_GTFOBINS",
+  "binary": "zsh",
+  "cve": null,
+  "exploitation": ["{{binary}} -p"],
+  "post_exploit": ["id"],
+  "source": "gtfobins.github.io",
+  "tags": ["suid", "gtfobins"],
+  "severity": "high"
+}

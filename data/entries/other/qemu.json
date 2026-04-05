@@ -1,0 +1,1 @@
+{"id":"qemu_kvm_escape","category":"OTHER","binary":"qemu-ga","cve":null,"exploitation":["qemu-ga --method=guest-exec --params='{\"cmd\":\"{{shell}}\"}'"],"notes":"Requires QEMU guest agent socket.","source":"generic","tags":["qemu","kvm","container"],"severity":"high"}

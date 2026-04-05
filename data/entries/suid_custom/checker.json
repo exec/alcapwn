@@ -1,0 +1,1 @@
+{"id":"suid_checker","category":"SUID_CUSTOM","binary":"checker","cve":null,"exploitation":["{{binary}}"],"post_exploit":["id"],"notes":"TryHackMe/Blog.","source":"tryhackme/Blog","tags":["suid","ctf"],"severity":"high"}

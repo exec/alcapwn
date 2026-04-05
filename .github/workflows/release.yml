@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          # Linux — CGO_ENABLED=0 produces fully static binaries (no glibc dep)
+          - { name: alcapwn-linux-amd64,   goos: linux,   goarch: amd64,  runner: ubuntu-latest }
+          - { name: alcapwn-linux-arm64,   goos: linux,   goarch: arm64,  runner: ubuntu-latest }
+          - { name: alcapwn-linux-armv7,   goos: linux,   goarch: arm,    goarm: "7", runner: ubuntu-latest }
+          - { name: alcapwn-linux-i386,    goos: linux,   goarch: 386,    runner: ubuntu-latest }
+          # BSDs — Go cross-compiles from Linux natively
+          - { name: alcapwn-freebsd-amd64, goos: freebsd, goarch: amd64,  runner: ubuntu-latest }
+          - { name: alcapwn-netbsd-amd64,  goos: netbsd,  goarch: amd64,  runner: ubuntu-latest }
+          # macOS — native runners for darwin targets
+          - { name: alcapwn-macos-x86_64,  goos: darwin,  goarch: amd64,  runner: macos-latest }
+          - { name: alcapwn-macos-aarch64, goos: darwin,  goarch: arm64,  runner: macos-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.4"
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          mkdir -p dist
+          go build -ldflags "-s -w" -o dist/alcapwn .
+      - name: Package
+        run: cd dist && tar -czf ${{ matrix.name }}.tar.gz alcapwn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.name }}.tar.gz
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+      - uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          prerelease: false
+          files: artifacts/*/*.tar.gz
+          body: |
+            ## Install
+
+            ### Homebrew (macOS / Linux)
+            ```sh
+            brew tap exec/homebrew-tap
+            brew install alcapwn
+            ```
+
+            ### Direct download
+            Download the archive for your platform from the assets below, extract it, and place `alcapwn` somewhere on your `$PATH`.
+
+            | Platform | Architecture | File |
+            |----------|-------------|------|
+            | Linux    | x86_64      | `alcapwn-linux-amd64.tar.gz` |
+            | Linux    | arm64       | `alcapwn-linux-arm64.tar.gz` |
+            | Linux    | armv7       | `alcapwn-linux-armv7.tar.gz` |
+            | Linux    | i386        | `alcapwn-linux-i386.tar.gz` |
+            | FreeBSD  | x86_64      | `alcapwn-freebsd-amd64.tar.gz` |
+            | NetBSD   | x86_64      | `alcapwn-netbsd-amd64.tar.gz` |
+            | macOS    | Intel       | `alcapwn-macos-x86_64.tar.gz` |
+            | macOS    | Apple Silicon | `alcapwn-macos-aarch64.tar.gz` |
+
+            ```sh
+            tar -xzf alcapwn-<platform>-<arch>.tar.gz
+            sudo mv alcapwn /usr/local/bin/
+            ```
+
+  homebrew:
+    name: Bump Homebrew formula
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: alcapwn
+          homebrew-tap: exec/homebrew-tap
+          base-branch: main
+          download-url: https://github.com/exec/alcapwn/releases/download/${{ github.ref_name }}/alcapwn-macos-aarch64.tar.gz
+          commit-message: "{{formulaName}} {{version}}"
+        env:
+          COMMITTER_TOKEN: ${{ secrets.COMMITTER_TOKEN }}

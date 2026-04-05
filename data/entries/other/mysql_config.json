@@ -1,0 +1,1 @@
+{"id":"mysql_config_creds","category":"OTHER","binary":"mysql","cve":null,"exploitation":["grep -r password /etc/mysql/ 2>/dev/null"],"source":"generic","tags":["mysql"],"severity":"high"}

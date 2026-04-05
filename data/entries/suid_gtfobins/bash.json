@@ -1,0 +1,11 @@
+{
+  "id": "suid_bash",
+  "category": "SUID_GTFOBINS",
+  "binary": "bash",
+  "cve": null,
+  "exploitation": ["{{binary}} -p"],
+  "post_exploit": ["id"],
+  "source": "gtfobins.github.io",
+  "tags": ["suid", "gtfobins"],
+  "severity": "high"
+}

