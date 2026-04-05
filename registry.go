@@ -73,29 +73,33 @@ func NewRegistry() *Registry {
 	}
 }
 
+// nextIDLocked finds the next available session ID (1–1024).
+// Caller must hold r.mu. Returns 0 if no slot is free.
+func (r *Registry) nextIDLocked() int {
+	// Fast path: try nextID first.
+	if r.nextID <= 1024 {
+		if _, taken := r.sessions[r.nextID]; !taken {
+			id := r.nextID
+			r.nextID++
+			return id
+		}
+	}
+	// Slow path: scan from 1 for the first free slot.
+	for i := 1; i <= 1024; i++ {
+		if _, taken := r.sessions[i]; !taken {
+			return i
+		}
+	}
+	return 0
+}
+
 // Allocate assigns the next available ID (1–1024) and registers a new Session.
 // Returns nil if the session limit is reached.
 func (r *Registry) Allocate(conn net.Conn, useTLS bool) *Session {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	id := 0
-	// Fast path: try nextID first.
-	if r.nextID <= 1024 {
-		if _, taken := r.sessions[r.nextID]; !taken {
-			id = r.nextID
-			r.nextID++
-		}
-	}
-	// Slow path: scan from 1 for the first free slot.
-	if id == 0 {
-		for i := 1; i <= 1024; i++ {
-			if _, taken := r.sessions[i]; !taken {
-				id = i
-				break
-			}
-		}
-	}
+	id := r.nextIDLocked()
 	if id == 0 {
 		fmt.Println("[!] Session limit reached (1024)")
 		return nil
@@ -134,6 +138,10 @@ func (r *Registry) Remove(id int) {
 			r.httpTokens.Delete(tok)
 		}
 		delete(r.sessions, id)
+		// Allow the freed ID to be reused by the fast path.
+		if id < r.nextID {
+			r.nextID = id
+		}
 	}
 }
 
@@ -144,21 +152,7 @@ func (r *Registry) AllocateHTTP(token, remoteAddr string) *Session {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	id := 0
-	if r.nextID <= 1024 {
-		if _, taken := r.sessions[r.nextID]; !taken {
-			id = r.nextID
-			r.nextID++
-		}
-	}
-	if id == 0 {
-		for i := 1; i <= 1024; i++ {
-			if _, taken := r.sessions[i]; !taken {
-				id = i
-				break
-			}
-		}
-	}
+	id := r.nextIDLocked()
 	if id == 0 {
 		fmt.Println("[!] Session limit reached (1024)")
 		return nil
