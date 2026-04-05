@@ -286,7 +286,20 @@ func (p *PTYUpgrader) readUntilPrompt(timeout time.Duration) (string, error) {
 	buf := make([]byte, 4096)
 	p.ansiState.Reset()
 
-	for !rePromptPattern.MatchString(data.String()) {
+	for {
+		// Only check the tail of the accumulated buffer for the prompt
+		// pattern. data.String() copies the entire builder contents; by
+		// checking just the last 50 bytes we avoid O(n^2) allocations on
+		// large outputs.
+		s := data.String()
+		tail := s
+		if len(tail) > 50 {
+			tail = tail[len(tail)-50:]
+		}
+		if rePromptPattern.MatchString(tail) {
+			break
+		}
+
 		n, err := p.reader.Read(buf)
 		if n > 0 {
 			// Strip ANSI sequences before appending to data
