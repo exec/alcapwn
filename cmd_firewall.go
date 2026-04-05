@@ -270,6 +270,14 @@ func (c *Console) cmdFirewallRule(args []string) {
 		return
 	}
 
+	// Validate IP or CIDR before storing
+	if net.ParseIP(ip) == nil {
+		if _, _, err := net.ParseCIDR(ip); err != nil {
+			fmt.Printf("[!] Invalid IP or CIDR: %s\n", ip)
+			return
+		}
+	}
+
 	c.firewallMu.Lock()
 	defer c.firewallMu.Unlock()
 

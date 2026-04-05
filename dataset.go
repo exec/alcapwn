@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -60,10 +61,15 @@ func pathsMatch(path1, path2 string) bool {
 	if path1 == "" || path2 == "" {
 		return false
 	}
-	if filepath.Base(path1) == filepath.Base(path2) {
+	if path1 == path2 {
 		return true
 	}
-	return path1 == path2
+	// Basename match only if at least one is a bare name (no directory component)
+	b1, b2 := filepath.Base(path1), filepath.Base(path2)
+	if b1 == path1 || b2 == path2 {
+		return b1 == b2
+	}
+	return false
 }
 
 func createMatch(entry DatasetEntry, confidence, reason, binaryPath string) MatchResult {
@@ -392,9 +398,9 @@ func matchFindings(f *Findings) []MatchResult {
 
 		// Docker Compose match
 		if !matchedTags["compose"] && hasTagStr(tags, "compose") {
-			for _, f := range f.InterestingFiles {
-				if filepath.Base(f) == "docker-compose.yml" || filepath.Base(f) == "compose.yml" {
-					matches = append(matches, createMatch(entry, "high", "Docker Compose file with secrets found", f))
+			for _, file := range f.InterestingFiles {
+				if filepath.Base(file) == "docker-compose.yml" || filepath.Base(file) == "compose.yml" {
+					matches = append(matches, createMatch(entry, "high", "Docker Compose file with secrets found", file))
 					matchedPaths["docker-compose"] = true
 					matchedTags["compose"] = true
 					break
@@ -444,25 +450,21 @@ func matchFindings(f *Findings) []MatchResult {
 		}
 	}
 
-	for i := 0; i < len(matches)-1; i++ {
-		for j := i + 1; j < len(matches); j++ {
-			swap := false
-			confI := confidenceOrder[matches[i].MatchConfidence]
-			confJ := confidenceOrder[matches[j].MatchConfidence]
-			if confI > confJ {
-				swap = true
-			} else if confI == confJ {
-				secI := severityOrder[*matches[i].Entry.Severity]
-				secJ := severityOrder[*matches[j].Entry.Severity]
-				if secI > secJ {
-					swap = true
-				}
-			}
-			if swap {
-				matches[i], matches[j] = matches[j], matches[i]
-			}
+	sort.Slice(matches, func(i, j int) bool {
+		ci := confidenceOrder[matches[i].MatchConfidence]
+		cj := confidenceOrder[matches[j].MatchConfidence]
+		if ci != cj {
+			return ci < cj
 		}
-	}
+		si, sj := 0, 0
+		if matches[i].Entry.Severity != nil {
+			si = severityOrder[*matches[i].Entry.Severity]
+		}
+		if matches[j].Entry.Severity != nil {
+			sj = severityOrder[*matches[j].Entry.Severity]
+		}
+		return si < sj
+	})
 
 	return matches
 }
