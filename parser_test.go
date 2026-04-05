@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -419,6 +420,35 @@ func TestCheckCVECandidates(t *testing.T) {
 		}
 		if !foundWritablePasswd {
 			t.Error("expected WRT-PASSWD when /etc/passwd is in writable paths")
+		}
+	})
+
+	t.Run("env secret value redacted from CVE evidence", func(t *testing.T) {
+		p := &ReconParser{}
+		f := newFindings()
+
+		sections := map[string]string{
+			"SUDO ACCESS":         "",
+			"SUID/SGID BINARIES":  "",
+			"CAPABILITIES":        "",
+			"ENVIRONMENT & TOOLS": "AWS_SECRET_ACCESS_KEY=supersecretvalue123",
+			"WRITABLE PATHS":      "",
+		}
+
+		candidates := p.checkCVECandidates(f, sections)
+
+		for _, c := range candidates {
+			if c.CVE == "ENV-SECRET" {
+				if strings.Contains(c.Evidence, "supersecret") {
+					t.Error("secret value leaked into CVE evidence")
+				}
+				if !strings.Contains(c.Evidence, "AWS_SECRET_ACCESS_KEY") {
+					t.Error("expected variable name in evidence")
+				}
+				if !strings.Contains(c.Evidence, "<redacted>") {
+					t.Error("expected <redacted> placeholder in evidence")
+				}
+			}
 		}
 	})
 }
