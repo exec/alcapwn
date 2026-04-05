@@ -54,11 +54,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts/
+      - name: Generate checksums
+        run: |
+          mkdir -p dist
+          cp artifacts/*/*.tar.gz dist/
+          cd dist
+          sha256sum *.tar.gz > checksums-sha256.txt
       - uses: softprops/action-gh-release@v1
         with:
           draft: false
           prerelease: false
-          files: artifacts/*/*.tar.gz
+          files: |
+            dist/*.tar.gz
+            dist/checksums-sha256.txt
           body: |
             ## Install
 
