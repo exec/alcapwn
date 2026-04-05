@@ -53,6 +53,76 @@ func (s *ANSIState) Parse(data []byte) []byte {
 	// Append to buffer first
 	s.buf = append(s.buf, data...)
 
+	// Strip C1 control codes (0x80-0x9F) — 8-bit equivalents of dangerous ESC sequences.
+	// These have no legitimate use in UTF-8 terminal output. UTF-8 lead bytes (0xC0+)
+	// and their continuation bytes (0x80-0xBF) are preserved.
+	// Sequence-bearing C1 codes consume their body (matching their 2-byte ESC equivalents).
+	{
+		n := 0
+		for i := 0; i < len(s.buf); i++ {
+			b := s.buf[i]
+			if b >= 0xc0 {
+				// UTF-8 lead byte — copy it and all continuation bytes.
+				seqLen := 1
+				switch {
+				case b < 0xe0:
+					seqLen = 2
+				case b < 0xf0:
+					seqLen = 3
+				default:
+					seqLen = 4
+				}
+				end := i + seqLen
+				if end > len(s.buf) {
+					end = len(s.buf)
+				}
+				copy(s.buf[n:], s.buf[i:end])
+				n += end - i
+				i = end - 1 // -1 because the for loop increments
+				continue
+			}
+			if b >= 0x80 && b <= 0x9f {
+				switch b {
+				case 0x9b: // C1 CSI — skip params + final byte
+					i++
+					for i < len(s.buf) {
+						fb := s.buf[i]
+						if (fb >= 'A' && fb <= 'Z') || (fb >= 'a' && fb <= 'z') || (fb >= 0x40 && fb <= 0x7e) {
+							break // final byte consumed
+						}
+						i++
+					}
+				case 0x9d: // C1 OSC — skip to BEL or ST
+					i++
+					for i < len(s.buf) {
+						if s.buf[i] == 0x07 {
+							break
+						}
+						if s.buf[i] == 0x1b && i+1 < len(s.buf) && s.buf[i+1] == '\\' {
+							i++ // skip the '\' too (loop will advance past it)
+							break
+						}
+						i++
+					}
+				case 0x90, 0x9e, 0x9f: // C1 DCS, PM, APC — skip to ST
+					i++
+					for i < len(s.buf)-1 {
+						if s.buf[i] == 0x1b && s.buf[i+1] == '\\' {
+							i++ // skip the '\' too
+							break
+						}
+						i++
+					}
+				}
+				// Other C1 codes (0x80-0x8F, 0x91-0x9A, 0x9C): just strip the byte.
+				continue
+			}
+			s.buf[n] = b
+			n++
+		}
+		s.buf = s.buf[:n]
+	}
+
 	// Use regex-based stripping for OSC sequences (handles variable-length content)
 	// This avoids the slice bounds issue with the stateful approach
 	// We strip OSC after accumulating, which is safe since we're processing in order
@@ -112,67 +182,34 @@ func (s *ANSIState) Parse(data []byte) []byte {
 		}
 	}
 
-	// Check for DCS sequences: \x1bP...(\x1b\\)
+	// Strip DCS (\x1bP), APC (\x1b_), PM (\x1b^), and SOS (\x1bX) sequences.
+	// All use ST (\x1b\) as the terminator. Strip the full body.
 	for {
 		found := false
 		for i := 0; i < len(s.buf)-1; i++ {
-			if s.buf[i] == 0x1b && i+1 < len(s.buf) && s.buf[i+1] == 'P' {
-				// Find terminator
+			if s.buf[i] == 0x1b && (s.buf[i+1] == 'P' || s.buf[i+1] == '_' || s.buf[i+1] == '^' || s.buf[i+1] == 'X') {
+				if s.buf[i+1] == '_' {
+					s.apcWarn = true
+				}
+				// Find ST terminator (\x1b\)
+				end := -1
 				for j := i + 2; j < len(s.buf)-1; j++ {
 					if s.buf[j] == 0x1b && s.buf[j+1] == '\\' {
-						// Strip DCS
-						s.buf = append(s.buf[:i], s.buf[j+2:]...)
-						found = true
+						end = j + 2
 						break
 					}
 				}
-				if found {
-					break
+				if end == -1 {
+					// No ST found — strip from introducer to end of buffer
+					s.buf = s.buf[:i]
+				} else {
+					s.buf = append(s.buf[:i], s.buf[end:]...)
 				}
-			}
-		}
-		if !found {
-			break
-		}
-	}
-
-	// Check for PM sequences: \x1b^
-	for {
-		found := false
-		for i := 0; i < len(s.buf)-1; i++ {
-			if s.buf[i] == 0x1b && i+1 < len(s.buf) && s.buf[i+1] == '^' {
-				// Strip PM (2 bytes)
-				s.buf = append(s.buf[:i], s.buf[i+2:]...)
 				found = true
 				break
 			}
 		}
 		if !found {
-			break
-		}
-	}
-
-	// Check for SOS sequences: \x1b\\
-	for {
-		found := false
-		for i := 0; i < len(s.buf)-1; i++ {
-			if s.buf[i] == 0x1b && i+1 < len(s.buf) && s.buf[i+1] == '\\' {
-				// Strip SOS (2 bytes)
-				s.buf = append(s.buf[:i], s.buf[i+2:]...)
-				found = true
-				break
-			}
-		}
-		if !found {
-			break
-		}
-	}
-
-	// Check for APC sequences: \x1b_
-	for i := 0; i < len(s.buf)-1; i++ {
-		if s.buf[i] == 0x1b && i+1 < len(s.buf) && s.buf[i+1] == '_' {
-			s.apcWarn = true
-			// Don't strip APC - keep for warning display
 			break
 		}
 	}

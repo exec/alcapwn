@@ -873,6 +873,7 @@ const (
 	ifOscStripEsc                 // in ifOscStrip: saw 0x1b, waiting for '\'
 	ifStrip                       // APC/DCS/PM/SOS — discard until ST (\e\)
 	ifStripEsc                    // in ifStrip: saw 0x1b, waiting for '\'
+	ifCSIStrip                    // C1 CSI (0x9B) — discard params + final byte
 )
 
 // process filters p and returns bytes safe to write to the operator's terminal.
@@ -884,9 +885,43 @@ func (f *interactiveFilter) process(p []byte) (out []byte, apcDetected bool) {
 		switch f.state {
 
 		case ifNormal:
+			// Preserve UTF-8 multibyte sequences: lead bytes 0xC0-0xFF introduce
+			// 2-4 byte sequences whose continuation bytes (0x80-0xBF) overlap C1.
+			if f.utf8Rem > 0 && b >= 0x80 && b <= 0xbf {
+				// Expected UTF-8 continuation byte — pass through.
+				f.utf8Rem--
+				out = append(out, b)
+				continue
+			}
+			f.utf8Rem = 0 // Reset on any non-continuation byte.
+			if b >= 0xc0 {
+				// UTF-8 lead byte — emit and set expected continuation count.
+				switch {
+				case b < 0xe0:
+					f.utf8Rem = 1
+				case b < 0xf0:
+					f.utf8Rem = 2
+				default:
+					f.utf8Rem = 3
+				}
+				out = append(out, b)
+				continue
+			}
 			// Strip C1 control codes (0x80-0x9F) — 8-bit equivalents of dangerous ESC sequences.
 			// These have no legitimate use in UTF-8 terminal output.
+			// Sequence-bearing C1 codes transition to the appropriate stripping state.
 			if b >= 0x80 && b <= 0x9f {
+				switch b {
+				case 0x9b: // C1 CSI — strip params + final byte
+					f.state = ifCSIStrip
+				case 0x9d: // C1 OSC — strip to BEL or ST
+					f.state = ifOscStrip
+				case 0x90, 0x9e, 0x9f: // C1 DCS, PM, APC — strip to ST
+					if b == 0x9f && !f.apcSeen {
+						f.apcSeen = true
+					}
+					f.state = ifStrip
+				}
 				continue
 			}
 			if b == 0x1b {
@@ -993,6 +1028,15 @@ func (f *interactiveFilter) process(p []byte) (out []byte, apcDetected bool) {
 			} else {
 				f.state = ifStrip
 			}
+
+		case ifCSIStrip:
+			// C1 CSI: discard parameter bytes and the final byte.
+			// CSI params are 0x30-0x3F (digits, semicolon, etc.), intermediates 0x20-0x2F.
+			// Final byte is 0x40-0x7E.
+			if b >= 0x40 && b <= 0x7e {
+				f.state = ifNormal // final byte consumed, sequence done
+			}
+			// else: parameter or intermediate byte — discard and stay in ifCSIStrip
 		}
 	}
 	return

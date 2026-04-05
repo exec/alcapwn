@@ -743,8 +743,45 @@ func stripDangerousAnsi(s string) string {
 		}
 		// Strip C1 control codes (0x80-0x9F) — 8-bit equivalents of dangerous ESC sequences.
 		// These have no legitimate use in UTF-8 terminal output.
+		// Consume the body they introduce, matching the 2-byte ESC equivalents.
 		if s[i] >= 0x80 && s[i] <= 0x9f {
-			i++
+			switch s[i] {
+			case 0x9b: // CSI — skip params + final byte
+				i++
+				for i < len(s) && ((s[i] >= '0' && s[i] <= '9') || s[i] == ';' || s[i] == ' ' || s[i] == '?') {
+					i++
+				}
+				if i < len(s) {
+					i++ // skip final byte
+				}
+			case 0x9d: // OSC — skip to BEL or ST
+				i++
+				for i < len(s) {
+					if s[i] == 0x07 {
+						i++
+						break
+					}
+					if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' {
+						i += 2
+						break
+					}
+					i++
+				}
+			case 0x90, 0x9e, 0x9f: // DCS, PM, APC — skip to ST
+				i++
+				for i < len(s)-1 {
+					if s[i] == 0x1b && s[i+1] == '\\' {
+						i += 2
+						break
+					}
+					i++
+				}
+				if i == len(s)-1 {
+					i = len(s)
+				}
+			default:
+				i++ // other C1 codes — just strip the byte
+			}
 			continue
 		}
 		if s[i] == '\x1b' && i+1 < len(s) {
