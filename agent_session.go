@@ -5,10 +5,16 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"alcapwn/proto"
 )
+
+// agentHandshakeDeadline is the maximum time allowed for an agent to complete
+// the handshake (routing tag + crypto + Hello/Welcome). Connections that take
+// longer are closed. Tests may override this to a shorter duration.
+var agentHandshakeDeadline = 30 * time.Second
 
 // agentTaskReq is an internal request from an operator command (cmdExec,
 // cmdDownload, cmdUpload) to the handleAgentSession write loop.
@@ -31,6 +37,9 @@ type agentTaskReq struct {
 // Called from acceptLoop in its own goroutine, identically to handleSession.
 func handleAgentSession(sess *Session, opts sessionOpts) {
 	conn := sess.Conn
+
+	// Set a deadline for the entire handshake phase. Cleared after Welcome.
+	conn.SetDeadline(time.Now().Add(agentHandshakeDeadline)) //nolint:errcheck
 
 	// ── Phase 1: Consume routing tag ─────────────────────────────────────────
 	// acceptLoop re-injected the 4-byte ALCA magic via prefixConn for routing
@@ -115,6 +124,9 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 		opts.printer.Notify("[*] [%d] Welcome sent, agent ready", sess.ID)
 	}
 
+	// Handshake complete — clear the deadline for normal operation.
+	conn.SetDeadline(time.Time{}) //nolint:errcheck
+
 	// ── Session setup ────────────────────────────────────────────────────────
 
 	taskCh := make(chan agentTaskReq, 16)
@@ -192,7 +204,18 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 			pending[req.task.ID] = req.resultCh
 			pendingMu.Unlock()
 			if err := proto.WriteMsgEncrypted(conn, cs, proto.MsgTask, req.task); err != nil {
-				req.resultCh <- proto.Result{TaskID: req.task.ID, Error: err.Error()}
+				// Write failed — resolve ALL pending tasks with an error,
+				// not just the one that triggered the failure.
+				errMsg := fmt.Sprintf("write failed: %v", err)
+				pendingMu.Lock()
+				for id, ch := range pending {
+					ch <- proto.Result{TaskID: id, Error: errMsg}
+					delete(pending, id)
+				}
+				pendingMu.Unlock()
+				opts.printer.Notify("[-] Agent %d write error: %v", sess.ID, err)
+				conn.Close()
+				opts.registry.Remove(sess.ID)
 				return
 			}
 		}
@@ -203,7 +226,7 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 // or timeout elapses.
 func agentExec(sess *Session, command string, timeout time.Duration) (proto.Result, error) {
 	return agentDispatch(sess, proto.Task{
-		ID:      agentTaskID("ex", command),
+		ID:      agentTaskID("ex"),
 		Kind:    proto.TaskExec,
 		Command: command,
 	}, timeout)
@@ -212,7 +235,7 @@ func agentExec(sess *Session, command string, timeout time.Duration) (proto.Resu
 // agentDownload asks the agent to read remotePath and returns the file bytes.
 func agentDownload(sess *Session, remotePath string) ([]byte, error) {
 	res, err := agentDispatch(sess, proto.Task{
-		ID:   agentTaskID("dl", remotePath),
+		ID:   agentTaskID("dl"),
 		Kind: proto.TaskDownload,
 		Path: remotePath,
 	}, 60*time.Second)
@@ -228,7 +251,7 @@ func agentDownload(sess *Session, remotePath string) ([]byte, error) {
 // agentUpload asks the agent to write data to remotePath.
 func agentUpload(sess *Session, remotePath string, data []byte) error {
 	res, err := agentDispatch(sess, proto.Task{
-		ID:   agentTaskID("ul", remotePath),
+		ID:   agentTaskID("ul"),
 		Kind: proto.TaskUpload,
 		Path: remotePath,
 		Data: data,
@@ -268,9 +291,12 @@ func agentDispatch(sess *Session, task proto.Task, timeout time.Duration) (proto
 	}
 }
 
-// agentTaskID returns a short unique task ID built from a prefix and content hash.
-func agentTaskID(prefix, content string) string {
-	t := time.Now().UnixNano()
-	return fmt.Sprintf("%s%x%x", prefix, t, len(content))
+// taskSeq is an atomic counter for generating unique task IDs.
+var taskSeq atomic.Uint64
+
+// agentTaskID returns a short unique task ID built from a prefix and
+// a monotonically increasing atomic counter.
+func agentTaskID(prefix string) string {
+	return fmt.Sprintf("%s%x", prefix, taskSeq.Add(1))
 }
 

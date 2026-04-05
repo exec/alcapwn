@@ -684,9 +684,11 @@ func runPipeline(stages []pipelineStage, defaultStdin io.Reader, defaultStdout, 
 		}
 		cmd.Stderr = defaultStderr
 		// Apply any file redirections for this stage.
-		if err := openRedirections(cmd, st); err != nil {
+		rdFiles, err := openRedirections(cmd, st)
+		if err != nil {
 			return err
 		}
+		defer closeAll(rdFiles)
 		cmds[i] = cmd
 	}
 
@@ -724,45 +726,62 @@ func runStage(st pipelineStage, defaultStdin io.Reader, defaultStdout, defaultSt
 	cmd.Stdin = defaultStdin
 	cmd.Stdout = defaultStdout
 	cmd.Stderr = defaultStderr
-	if err := openRedirections(cmd, st); err != nil {
+	opened, err := openRedirections(cmd, st)
+	if err != nil {
 		return err
 	}
+	defer closeAll(opened)
 	return cmd.Run()
 }
 
-// openRedirections opens the files named in st and wires them into cmd.
-// Opened files are closed after cmd.Run returns via runtime finalisation;
-// for long pipelines callers should rely on the OS to reclaim them on exit.
-func openRedirections(cmd *exec.Cmd, st pipelineStage) error {
+// openRedirections opens the files named in st, wires them into cmd, and
+// returns the opened files so the caller can close them after cmd.Run.
+func openRedirections(cmd *exec.Cmd, st pipelineStage) ([]*os.File, error) {
+	var opened []*os.File
 	if st.stdinFile != "" {
 		f, err := os.Open(st.stdinFile)
 		if err != nil {
-			return err
+			closeAll(opened)
+			return nil, err
 		}
 		cmd.Stdin = f
+		opened = append(opened, f)
 	}
 	if st.stdoutFile != "" {
 		f, err := os.Create(st.stdoutFile)
 		if err != nil {
-			return err
+			closeAll(opened)
+			return nil, err
 		}
 		cmd.Stdout = f
+		opened = append(opened, f)
 	}
 	if st.stdoutAppend != "" {
 		f, err := os.OpenFile(st.stdoutAppend, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			return err
+			closeAll(opened)
+			return nil, err
 		}
 		cmd.Stdout = f
+		opened = append(opened, f)
 	}
 	if st.stderrFile != "" {
 		f, err := os.Create(st.stderrFile)
 		if err != nil {
-			return err
+			closeAll(opened)
+			return nil, err
 		}
 		cmd.Stderr = f
+		opened = append(opened, f)
 	}
-	return nil
+	return opened, nil
+}
+
+// closeAll closes all files in the slice, ignoring errors.
+func closeAll(files []*os.File) {
+	for _, f := range files {
+		f.Close()
+	}
 }
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────

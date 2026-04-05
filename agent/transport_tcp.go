@@ -24,15 +24,17 @@ type TCPTransport struct {
 	cs     *proto.CryptoSession
 	msgCh  chan *proto.Envelope // read goroutine → PollTask
 	errCh  chan error           // read goroutine → PollTask
+	doneCh chan struct{}        // closed by Close(); unblocks readLoop
 	closed atomic.Bool
 }
 
 func newTCPTransport() *TCPTransport {
 	return &TCPTransport{
-		addr:  net.JoinHostPort(lhost, lport),
-		fp:    serverFingerprint,
-		msgCh: make(chan *proto.Envelope, 4),
-		errCh: make(chan error, 1),
+		addr:   net.JoinHostPort(lhost, lport),
+		fp:     serverFingerprint,
+		msgCh:  make(chan *proto.Envelope, 4),
+		errCh:  make(chan error, 1),
+		doneCh: make(chan struct{}),
 	}
 }
 
@@ -110,8 +112,10 @@ func (t *TCPTransport) Connect(hello proto.Hello) error {
 }
 
 // readLoop decrypts incoming frames and forwards them to msgCh.
+// A 90-second read deadline ensures the loop exits if the server disappears.
 func (t *TCPTransport) readLoop() {
 	for {
+		t.conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		env, err := proto.ReadMsgEncrypted(t.conn, t.cs)
 		if err != nil {
 			if !t.closed.Load() {
@@ -122,7 +126,12 @@ func (t *TCPTransport) readLoop() {
 			}
 			return
 		}
-		t.msgCh <- env
+		t.conn.SetReadDeadline(time.Time{}) // clear deadline on success
+		select {
+		case t.msgCh <- env:
+		case <-t.doneCh:
+			return
+		}
 	}
 }
 
@@ -168,9 +177,11 @@ func (t *TCPTransport) SendResult(result proto.Result) error {
 	return proto.WriteMsgEncrypted(t.conn, t.cs, proto.MsgResult, result)
 }
 
-// Close marks the transport closed and shuts down the connection.
+// Close marks the transport closed, signals doneCh, and shuts down the connection.
 func (t *TCPTransport) Close() {
-	t.closed.Store(true)
+	if t.closed.CompareAndSwap(false, true) {
+		close(t.doneCh)
+	}
 	if t.conn != nil {
 		t.conn.Close()
 	}

@@ -82,10 +82,9 @@ func sanitizeLabel(s string) string {
 
 // hostFromAddr extracts the IP address (without port) from a net.Addr.
 func hostFromAddr(addr net.Addr) string {
-	host := addr.String()
-	if strings.Contains(host, ":") {
-		parts := strings.Split(host, ":")
-		host = strings.Join(parts[:len(parts)-1], ":")
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
 	}
 	return host
 }

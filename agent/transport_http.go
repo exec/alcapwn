@@ -110,7 +110,10 @@ func (t *HTTPTransport) Connect(hello proto.Hello) error {
 	if err != nil {
 		return fmt.Errorf("register: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("register: server returned %s", resp.Status)
 	}
@@ -151,7 +154,7 @@ func (t *HTTPTransport) Connect(hello proto.Hello) error {
 	if welcome.Interval > 0 {
 		t.ivSec = welcome.Interval
 	}
-	if welcome.Jitter >= 0 && welcome.Jitter <= 100 {
+	if welcome.Jitter > 0 && welcome.Jitter <= 100 {
 		t.jitPct = welcome.Jitter
 	}
 	return nil
@@ -198,6 +201,7 @@ func (t *HTTPTransport) PollTask() (*proto.Task, error) {
 			return &task, nil
 
 		default:
+			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			return nil, fmt.Errorf("poll: unexpected status %s", resp.Status)
 		}
@@ -218,6 +222,7 @@ func (t *HTTPTransport) SendResult(result proto.Result) error {
 	if err != nil {
 		return fmt.Errorf("result post: %w", err)
 	}
+	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("result post: server returned %s", resp.Status)

@@ -51,11 +51,18 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts/
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          find . -name '*.tar.gz' -exec sha256sum {} + | sed 's|.*/||' > checksums-sha256.txt
+          cat checksums-sha256.txt
       - uses: softprops/action-gh-release@v1
         with:
           draft: false
           prerelease: false
-          files: artifacts/*/*.tar.gz
+          files: |
+            artifacts/*/*.tar.gz
+            artifacts/checksums-sha256.txt
           body: |
             ## Install
 

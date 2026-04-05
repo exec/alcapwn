@@ -39,6 +39,9 @@ func (c *Console) cmdListen(args []string) {
 				if i+1 < len(rest) { i++; downloadDir = rest[i] }
 			case "--tls":
 				useTLSFlag = true
+			default:
+				fmt.Printf("[!] Unknown flag: %s\n", rest[i])
+				return
 			}
 		}
 

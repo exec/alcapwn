@@ -20,7 +20,7 @@ A "pwnback shell" (pbsh) is an adversarial reverse shell designed to turn the ta
 | Attack | Can alcapwn prevent it? | alcapwn's response |
 |--------|------------------------|-------------------|
 | **ANSI Fragmentation** | Yes - stateful parser catches byte-level fragments | Full prevention via state machine |
-| **Nonce Reflection** | Yes - HMAC obfuscation | Nonce不可猜 |
+| **Nonce Reflection** | Yes - HMAC obfuscation | Nonce is unpredictable |
 | **DCS/PM Sequences** | Yes - stateful parser filters them | Full prevention |
 | **APC Sequences** | No - cannot strip safely | **WARNING ALERT** |
 | **Process Breakaways (setsid/nohup)** | No - remote process has its own PID | **WARNING ALERT** |
@@ -59,20 +59,15 @@ When reviewing recon findings, watch for:
 
 ### Recommended Configuration
 
-Create a `config.yml` in your alcapwn directory:
+Create a `config.json` in your `~/.alcapwn/` directory:
 
-```yaml
-# Disable automated prompts - you must manually confirm every interactive operation
-DisableAutomatedPrompts: true
-
-# Maximum recon time before forced termination
-MaxReconTime: 300
-
-# Path to save findings
-FindingsDir: "/path/to/safe/storage"
-
-# Enable verbose mode for detailed debugging
-Verbose: false
+```json
+{
+  "auto_open_listeners": true,
+  "findings_dir": "/path/to/safe/storage",
+  "max_reconnect_attempts": 5,
+  "reconnect_timeout": 30
+}
 ```
 
 ## Known Vulnerabilities & Workarounds
