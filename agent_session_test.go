@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,35 +17,54 @@ import (
 // ── agentTaskID ───────────────────────────────────────────────────────────────
 
 func TestAgentTaskID_nonEmpty(t *testing.T) {
-	id := agentTaskID("ex", "id")
+	id := agentTaskID("ex")
 	if id == "" {
 		t.Fatal("agentTaskID returned empty string")
 	}
 }
 
 func TestAgentTaskID_prefixPresent(t *testing.T) {
-	id := agentTaskID("dl", "/etc/passwd")
+	id := agentTaskID("dl")
 	if !strings.HasPrefix(id, "dl") {
 		t.Fatalf("expected id to start with prefix %q, got %q", "dl", id)
 	}
 }
 
-func TestAgentTaskID_differentContent(t *testing.T) {
-	id1 := agentTaskID("ex", "id")
-	id2 := agentTaskID("ex", "whoami")
-	// Different content should produce different IDs (different len portion).
-	// Note: same content can collide within same nanosecond in theory, but
-	// different length content guarantees different hex suffix.
+func TestAgentTaskID_consecutiveCallsUnique(t *testing.T) {
+	id1 := agentTaskID("ex")
+	id2 := agentTaskID("ex")
 	if id1 == id2 {
-		t.Fatalf("expected different IDs for different content lengths, got %q and %q", id1, id2)
+		t.Fatalf("consecutive calls produced identical IDs: %q", id1)
 	}
 }
 
 func TestAgentTaskID_differentPrefixes(t *testing.T) {
-	id1 := agentTaskID("ex", "cmd")
-	id2 := agentTaskID("dl", "cmd")
+	id1 := agentTaskID("ex")
+	id2 := agentTaskID("dl")
 	if id1 == id2 {
 		t.Fatalf("expected different IDs for different prefixes, got both %q", id1)
+	}
+}
+
+func TestAgentTaskID_Uniqueness(t *testing.T) {
+	const n = 1000
+	ids := make([]string, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			ids[idx] = agentTaskID("ex")
+		}(i)
+	}
+	wg.Wait()
+
+	seen := make(map[string]struct{}, n)
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			t.Fatalf("duplicate task ID: %q", id)
+		}
+		seen[id] = struct{}{}
 	}
 }
 
@@ -62,7 +82,7 @@ func TestAgentDispatch_nilChannel(t *testing.T) {
 	}
 	// agentTaskCh is nil by default → dispatch should return an error immediately.
 	_, err := agentDispatch(sess, proto.Task{
-		ID:      agentTaskID("ex", "id"),
+		ID:      agentTaskID("ex"),
 		Kind:    proto.TaskExec,
 		Command: "id",
 	}, 2*time.Second)

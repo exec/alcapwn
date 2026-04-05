@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"alcapwn/proto"
@@ -203,7 +204,7 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 // or timeout elapses.
 func agentExec(sess *Session, command string, timeout time.Duration) (proto.Result, error) {
 	return agentDispatch(sess, proto.Task{
-		ID:      agentTaskID("ex", command),
+		ID:      agentTaskID("ex"),
 		Kind:    proto.TaskExec,
 		Command: command,
 	}, timeout)
@@ -212,7 +213,7 @@ func agentExec(sess *Session, command string, timeout time.Duration) (proto.Resu
 // agentDownload asks the agent to read remotePath and returns the file bytes.
 func agentDownload(sess *Session, remotePath string) ([]byte, error) {
 	res, err := agentDispatch(sess, proto.Task{
-		ID:   agentTaskID("dl", remotePath),
+		ID:   agentTaskID("dl"),
 		Kind: proto.TaskDownload,
 		Path: remotePath,
 	}, 60*time.Second)
@@ -228,7 +229,7 @@ func agentDownload(sess *Session, remotePath string) ([]byte, error) {
 // agentUpload asks the agent to write data to remotePath.
 func agentUpload(sess *Session, remotePath string, data []byte) error {
 	res, err := agentDispatch(sess, proto.Task{
-		ID:   agentTaskID("ul", remotePath),
+		ID:   agentTaskID("ul"),
 		Kind: proto.TaskUpload,
 		Path: remotePath,
 		Data: data,
@@ -268,9 +269,12 @@ func agentDispatch(sess *Session, task proto.Task, timeout time.Duration) (proto
 	}
 }
 
-// agentTaskID returns a short unique task ID built from a prefix and content hash.
-func agentTaskID(prefix, content string) string {
-	t := time.Now().UnixNano()
-	return fmt.Sprintf("%s%x%x", prefix, t, len(content))
+// taskSeq is an atomic counter for generating unique task IDs.
+var taskSeq atomic.Uint64
+
+// agentTaskID returns a short unique task ID built from a prefix and
+// a monotonically increasing atomic counter.
+func agentTaskID(prefix string) string {
+	return fmt.Sprintf("%s%x", prefix, taskSeq.Add(1))
 }
 

