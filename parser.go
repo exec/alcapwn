@@ -786,7 +786,12 @@ func (p *ReconParser) checkCVECandidates(f *Findings, sections map[string]string
 					Name:        "Environment Variable Secret",
 					Description: "Sensitive credential in environment variables",
 					Severity:    "high",
-					Evidence:    fmt.Sprintf("Secret found: %s", truncate(line, 50)),
+					Evidence:    fmt.Sprintf("Secret found in variable: %s", func() string {
+					if idx := strings.Index(line, "="); idx >= 0 {
+						return strings.TrimSpace(line[:idx])
+					}
+					return "<unknown>"
+				}()),
 					Confidence:  "high",
 				})
 				break
