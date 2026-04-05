@@ -418,14 +418,18 @@ func TestMiniShell_builtinPwd(t *testing.T) {
 }
 
 func TestMiniShell_builtinCd(t *testing.T) {
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) })
+
 	var out bytes.Buffer
 	s := NewMiniShell(strings.NewReader("cd /tmp\npwd\nexit\n"), &out)
 	s.Run()
 	if !strings.Contains(out.String(), "/tmp") {
 		t.Fatalf("want '/tmp' in output after cd, got %q", out.String())
 	}
-	// Restore wd for other tests.
-	os.Chdir(func() string { d, _ := os.Getwd(); return d }())
 }
 
 func TestMiniShell_builtinExport(t *testing.T) {
