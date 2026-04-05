@@ -2,10 +2,16 @@
 
 package main
 
-import "golang.org/x/sys/unix"
+import (
+	"unsafe"
+
+	"golang.org/x/sys/unix"
+)
 
 // fdSet sets the bit for fd in fds.
-// On Linux, FdSet.Bits is [16]int64 — one bit per fd, 64 fds per element.
+// On 64-bit Linux FdSet.Bits is [16]int64; on 32-bit it is [32]int32.
+// Using the element's own bit width makes this portable across GOARCH.
 func fdSet(fds *unix.FdSet, fd int) {
-	fds.Bits[fd>>6] |= int64(1) << (uint(fd) & 63)
+	const bitsPerWord = 8 * int(unsafe.Sizeof(fds.Bits[0]))
+	fds.Bits[fd/bitsPerWord] |= 1 << (uint(fd) % uint(bitsPerWord))
 }

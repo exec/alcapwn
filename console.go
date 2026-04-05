@@ -122,14 +122,15 @@ type consoleState struct {
 // are delivered as byte sequences instead of being processed by the OS line
 // discipline.
 type lineEditor struct {
-	mu      sync.Mutex
-	buf     []rune   // current input line
-	pos     int      // cursor position within buf
-	history []string // submitted command history
-	histIdx int      // index into history (len == "none selected")
-	active  bool     // true while readLine is blocking for input
-	prompt  string   // prompt string, for redraws triggered by Notify
-	fd      int      // terminal fd for raw-mode operations
+	mu        sync.Mutex
+	buf       []rune   // current input line
+	pos       int      // cursor position within buf
+	history   []string // submitted command history
+	histIdx   int      // index into history (len == "none selected")
+	active    bool     // true while readLine is blocking for input
+	prompt    string   // prompt string, for redraws triggered by Notify
+	fd        int      // terminal fd for raw-mode operations
+	restoreFn func()   // terminal restore callback; set while in raw mode
 }
 
 func newLineEditor(fd int) *lineEditor {
@@ -141,6 +142,17 @@ func (e *lineEditor) isActive() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.active
+}
+
+// restoreTerminal calls the stored terminal restore function if one is set.
+// Safe to call from any goroutine (e.g. signal handler).
+func (e *lineEditor) restoreTerminal() {
+	e.mu.Lock()
+	fn := e.restoreFn
+	e.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // redrawLine repaints the prompt and in-progress input after a notification
@@ -186,11 +198,13 @@ func (e *lineEditor) readLine(prompt string) (string, error) {
 	e.histIdx = len(e.history)
 	e.prompt = prompt
 	e.active = true
+	e.restoreFn = restore
 	e.mu.Unlock()
 
 	defer func() {
 		e.mu.Lock()
 		e.active = false
+		e.restoreFn = nil
 		e.mu.Unlock()
 	}()
 
@@ -776,6 +790,7 @@ func (c *Console) handleSignals(ch <-chan os.Signal) {
 
 		case syscall.SIGTERM:
 			fmt.Println("\n[!] SIGTERM received — shutting down...")
+			c.editor.restoreTerminal()
 			c.cleanShutdown()
 			os.Exit(0)
 		}
@@ -840,9 +855,10 @@ func (c *Console) cleanShutdown() {
 // Safe OSC sequences (e.g. terminal title \e]0;...) pass through unchanged.
 // All other bytes — including CSI and charset designators — are forwarded as-is.
 type interactiveFilter struct {
-	state   ifState
-	oscBuf  []byte // buffers \e] + up to 3 content bytes to detect OSC 52
-	apcSeen bool   // true after the first APC — prevents repeat warnings
+	state    ifState
+	oscBuf   []byte // buffers \e] + up to 3 content bytes to detect OSC 52
+	apcSeen  bool   // true after the first APC — prevents repeat warnings
+	utf8Rem  int    // remaining expected UTF-8 continuation bytes (0 = not in multibyte seq)
 }
 
 type ifState uint8
@@ -857,6 +873,7 @@ const (
 	ifOscStripEsc                 // in ifOscStrip: saw 0x1b, waiting for '\'
 	ifStrip                       // APC/DCS/PM/SOS — discard until ST (\e\)
 	ifStripEsc                    // in ifStrip: saw 0x1b, waiting for '\'
+	ifCSIStrip                    // C1 CSI (0x9B) — discard params + final byte
 )
 
 // process filters p and returns bytes safe to write to the operator's terminal.
@@ -868,6 +885,45 @@ func (f *interactiveFilter) process(p []byte) (out []byte, apcDetected bool) {
 		switch f.state {
 
 		case ifNormal:
+			// Preserve UTF-8 multibyte sequences: lead bytes 0xC0-0xFF introduce
+			// 2-4 byte sequences whose continuation bytes (0x80-0xBF) overlap C1.
+			if f.utf8Rem > 0 && b >= 0x80 && b <= 0xbf {
+				// Expected UTF-8 continuation byte — pass through.
+				f.utf8Rem--
+				out = append(out, b)
+				continue
+			}
+			f.utf8Rem = 0 // Reset on any non-continuation byte.
+			if b >= 0xc0 {
+				// UTF-8 lead byte — emit and set expected continuation count.
+				switch {
+				case b < 0xe0:
+					f.utf8Rem = 1
+				case b < 0xf0:
+					f.utf8Rem = 2
+				default:
+					f.utf8Rem = 3
+				}
+				out = append(out, b)
+				continue
+			}
+			// Strip C1 control codes (0x80-0x9F) — 8-bit equivalents of dangerous ESC sequences.
+			// These have no legitimate use in UTF-8 terminal output.
+			// Sequence-bearing C1 codes transition to the appropriate stripping state.
+			if b >= 0x80 && b <= 0x9f {
+				switch b {
+				case 0x9b: // C1 CSI — strip params + final byte
+					f.state = ifCSIStrip
+				case 0x9d: // C1 OSC — strip to BEL or ST
+					f.state = ifOscStrip
+				case 0x90, 0x9e, 0x9f: // C1 DCS, PM, APC — strip to ST
+					if b == 0x9f && !f.apcSeen {
+						f.apcSeen = true
+					}
+					f.state = ifStrip
+				}
+				continue
+			}
 			if b == 0x1b {
 				f.state = ifEsc
 			} else {
@@ -972,6 +1028,15 @@ func (f *interactiveFilter) process(p []byte) (out []byte, apcDetected bool) {
 			} else {
 				f.state = ifStrip
 			}
+
+		case ifCSIStrip:
+			// C1 CSI: discard parameter bytes and the final byte.
+			// CSI params are 0x30-0x3F (digits, semicolon, etc.), intermediates 0x20-0x2F.
+			// Final byte is 0x40-0x7E.
+			if b >= 0x40 && b <= 0x7e {
+				f.state = ifNormal // final byte consumed, sequence done
+			}
+			// else: parameter or intermediate byte — discard and stay in ifCSIStrip
 		}
 	}
 	return
