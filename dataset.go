@@ -80,12 +80,9 @@ func createMatch(entry DatasetEntry, confidence, reason, binaryPath string) Matc
 		MatchedBinaryPath: binaryPath,
 	}
 	if entry.Severity == nil {
-		sev := "high"
-		if confidence == "medium" {
-			sev = "medium"
-		}
-		if confidence == "low" {
-			sev = "low"
+		sev := confidence
+		if sev != "medium" && sev != "low" {
+			sev = "high"
 		}
 		result.Entry.Severity = &sev
 	}
