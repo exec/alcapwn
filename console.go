@@ -122,14 +122,15 @@ type consoleState struct {
 // are delivered as byte sequences instead of being processed by the OS line
 // discipline.
 type lineEditor struct {
-	mu      sync.Mutex
-	buf     []rune   // current input line
-	pos     int      // cursor position within buf
-	history []string // submitted command history
-	histIdx int      // index into history (len == "none selected")
-	active  bool     // true while readLine is blocking for input
-	prompt  string   // prompt string, for redraws triggered by Notify
-	fd      int      // terminal fd for raw-mode operations
+	mu        sync.Mutex
+	buf       []rune   // current input line
+	pos       int      // cursor position within buf
+	history   []string // submitted command history
+	histIdx   int      // index into history (len == "none selected")
+	active    bool     // true while readLine is blocking for input
+	prompt    string   // prompt string, for redraws triggered by Notify
+	fd        int      // terminal fd for raw-mode operations
+	restoreFn func()   // terminal restore callback; set while in raw mode
 }
 
 func newLineEditor(fd int) *lineEditor {
@@ -141,6 +142,17 @@ func (e *lineEditor) isActive() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.active
+}
+
+// restoreTerminal calls the stored terminal restore function if one is set.
+// Safe to call from any goroutine (e.g. signal handler).
+func (e *lineEditor) restoreTerminal() {
+	e.mu.Lock()
+	fn := e.restoreFn
+	e.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // redrawLine repaints the prompt and in-progress input after a notification
@@ -186,11 +198,13 @@ func (e *lineEditor) readLine(prompt string) (string, error) {
 	e.histIdx = len(e.history)
 	e.prompt = prompt
 	e.active = true
+	e.restoreFn = restore
 	e.mu.Unlock()
 
 	defer func() {
 		e.mu.Lock()
 		e.active = false
+		e.restoreFn = nil
 		e.mu.Unlock()
 	}()
 
@@ -776,6 +790,7 @@ func (c *Console) handleSignals(ch <-chan os.Signal) {
 
 		case syscall.SIGTERM:
 			fmt.Println("\n[!] SIGTERM received — shutting down...")
+			c.editor.restoreTerminal()
 			c.cleanShutdown()
 			os.Exit(0)
 		}
@@ -840,9 +855,10 @@ func (c *Console) cleanShutdown() {
 // Safe OSC sequences (e.g. terminal title \e]0;...) pass through unchanged.
 // All other bytes — including CSI and charset designators — are forwarded as-is.
 type interactiveFilter struct {
-	state   ifState
-	oscBuf  []byte // buffers \e] + up to 3 content bytes to detect OSC 52
-	apcSeen bool   // true after the first APC — prevents repeat warnings
+	state    ifState
+	oscBuf   []byte // buffers \e] + up to 3 content bytes to detect OSC 52
+	apcSeen  bool   // true after the first APC — prevents repeat warnings
+	utf8Rem  int    // remaining expected UTF-8 continuation bytes (0 = not in multibyte seq)
 }
 
 type ifState uint8
@@ -868,6 +884,11 @@ func (f *interactiveFilter) process(p []byte) (out []byte, apcDetected bool) {
 		switch f.state {
 
 		case ifNormal:
+			// Strip C1 control codes (0x80-0x9F) — 8-bit equivalents of dangerous ESC sequences.
+			// These have no legitimate use in UTF-8 terminal output.
+			if b >= 0x80 && b <= 0x9f {
+				continue
+			}
 			if b == 0x1b {
 				f.state = ifEsc
 			} else {
