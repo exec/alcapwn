@@ -419,6 +419,51 @@ func TestHandleAgentSession_badHello(t *testing.T) {
 	}
 }
 
+// TestAgentHandshake_Timeout verifies that an agent connection that sends
+// nothing is closed within the handshake deadline.
+func TestAgentHandshake_Timeout(t *testing.T) {
+	origDeadline := agentHandshakeDeadline
+	agentHandshakeDeadline = 1 * time.Second
+	defer func() { agentHandshakeDeadline = origDeadline }()
+
+	serverConn, agentConn := net.Pipe()
+	defer agentConn.Close()
+
+	reg := NewRegistry()
+	wrapped := &prefixConn{Conn: serverConn, prefix: proto.Magic[:]}
+	sess := reg.Allocate(wrapped, false)
+	if sess == nil {
+		t.Fatal("Allocate returned nil")
+	}
+
+	printer := newTestPrinter()
+	testKey := newTestServerKey(t)
+	opts := sessionOpts{
+		printer:   printer,
+		registry:  reg,
+		serverKey: testKey,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleAgentSession(sess, opts)
+	}()
+
+	// Agent sends nothing. handleAgentSession should time out and return.
+	select {
+	case <-done:
+		// Good — handshake timed out.
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleAgentSession did not time out on idle connection")
+	}
+
+	// Session should have been removed from the registry.
+	if reg.Get(sess.ID) != nil {
+		t.Error("session was not removed from registry after handshake timeout")
+	}
+}
+
 // TestHandleAgentSession_noServerKey verifies that handleAgentSession rejects
 // the connection immediately when no server key is configured.
 func TestHandleAgentSession_noServerKey(t *testing.T) {

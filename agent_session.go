@@ -11,6 +11,11 @@ import (
 	"alcapwn/proto"
 )
 
+// agentHandshakeDeadline is the maximum time allowed for an agent to complete
+// the handshake (routing tag + crypto + Hello/Welcome). Connections that take
+// longer are closed. Tests may override this to a shorter duration.
+var agentHandshakeDeadline = 30 * time.Second
+
 // agentTaskReq is an internal request from an operator command (cmdExec,
 // cmdDownload, cmdUpload) to the handleAgentSession write loop.
 // resultCh receives exactly one proto.Result: the agent's response or an
@@ -32,6 +37,9 @@ type agentTaskReq struct {
 // Called from acceptLoop in its own goroutine, identically to handleSession.
 func handleAgentSession(sess *Session, opts sessionOpts) {
 	conn := sess.Conn
+
+	// Set a deadline for the entire handshake phase. Cleared after Welcome.
+	conn.SetDeadline(time.Now().Add(agentHandshakeDeadline)) //nolint:errcheck
 
 	// ── Phase 1: Consume routing tag ─────────────────────────────────────────
 	// acceptLoop re-injected the 4-byte ALCA magic via prefixConn for routing
@@ -115,6 +123,9 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 	if opts.verbosity >= 1 {
 		opts.printer.Notify("[*] [%d] Welcome sent, agent ready", sess.ID)
 	}
+
+	// Handshake complete — clear the deadline for normal operation.
+	conn.SetDeadline(time.Time{}) //nolint:errcheck
 
 	// ── Session setup ────────────────────────────────────────────────────────
 
