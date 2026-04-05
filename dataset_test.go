@@ -42,7 +42,7 @@ func TestPathsMatch(t *testing.T) {
 			name:  "same basename different dir",
 			path1: "/usr/bin/bash",
 			path2: "/usr/local/bin/bash",
-			want:  true, // basename match: filepath.Base returns "bash" for both
+			want:  false, // both absolute paths with different dirs: no basename-only match
 		},
 		{
 			name:  "empty first",
