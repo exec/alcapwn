@@ -179,6 +179,9 @@ func TestLoadOrCreateServerKey_corruptFileContent(t *testing.T) {
 }
 
 func TestLoadOrCreateServerKey_writeFail(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping: root ignores directory permissions")
+	}
 	// Create a read-only directory. WriteFile inside it should fail.
 	dir := t.TempDir()
 	roDir := filepath.Join(dir, "readonly")
