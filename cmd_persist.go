@@ -824,6 +824,9 @@ func (c *Console) cmdPersistRemove(args []string) {
 
 // cmdConfig handles config management
 func (c *Console) cmdConfig(args []string) {
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
+
 	if len(args) == 0 {
 		fmt.Println("[!] Usage: config <set|show|reset>")
 		fmt.Println("  config set <key> <value> - Set config value")
