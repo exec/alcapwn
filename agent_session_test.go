@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,35 +17,54 @@ import (
 // ── agentTaskID ───────────────────────────────────────────────────────────────
 
 func TestAgentTaskID_nonEmpty(t *testing.T) {
-	id := agentTaskID("ex", "id")
+	id := agentTaskID("ex")
 	if id == "" {
 		t.Fatal("agentTaskID returned empty string")
 	}
 }
 
 func TestAgentTaskID_prefixPresent(t *testing.T) {
-	id := agentTaskID("dl", "/etc/passwd")
+	id := agentTaskID("dl")
 	if !strings.HasPrefix(id, "dl") {
 		t.Fatalf("expected id to start with prefix %q, got %q", "dl", id)
 	}
 }
 
-func TestAgentTaskID_differentContent(t *testing.T) {
-	id1 := agentTaskID("ex", "id")
-	id2 := agentTaskID("ex", "whoami")
-	// Different content should produce different IDs (different len portion).
-	// Note: same content can collide within same nanosecond in theory, but
-	// different length content guarantees different hex suffix.
+func TestAgentTaskID_consecutiveCallsUnique(t *testing.T) {
+	id1 := agentTaskID("ex")
+	id2 := agentTaskID("ex")
 	if id1 == id2 {
-		t.Fatalf("expected different IDs for different content lengths, got %q and %q", id1, id2)
+		t.Fatalf("consecutive calls produced identical IDs: %q", id1)
 	}
 }
 
 func TestAgentTaskID_differentPrefixes(t *testing.T) {
-	id1 := agentTaskID("ex", "cmd")
-	id2 := agentTaskID("dl", "cmd")
+	id1 := agentTaskID("ex")
+	id2 := agentTaskID("dl")
 	if id1 == id2 {
 		t.Fatalf("expected different IDs for different prefixes, got both %q", id1)
+	}
+}
+
+func TestAgentTaskID_Uniqueness(t *testing.T) {
+	const n = 1000
+	ids := make([]string, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			ids[idx] = agentTaskID("ex")
+		}(i)
+	}
+	wg.Wait()
+
+	seen := make(map[string]struct{}, n)
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			t.Fatalf("duplicate task ID: %q", id)
+		}
+		seen[id] = struct{}{}
 	}
 }
 
@@ -62,7 +82,7 @@ func TestAgentDispatch_nilChannel(t *testing.T) {
 	}
 	// agentTaskCh is nil by default → dispatch should return an error immediately.
 	_, err := agentDispatch(sess, proto.Task{
-		ID:      agentTaskID("ex", "id"),
+		ID:      agentTaskID("ex"),
 		Kind:    proto.TaskExec,
 		Command: "id",
 	}, 2*time.Second)
@@ -399,6 +419,51 @@ func TestHandleAgentSession_badHello(t *testing.T) {
 	}
 }
 
+// TestAgentHandshake_Timeout verifies that an agent connection that sends
+// nothing is closed within the handshake deadline.
+func TestAgentHandshake_Timeout(t *testing.T) {
+	origDeadline := agentHandshakeDeadline
+	agentHandshakeDeadline = 1 * time.Second
+	defer func() { agentHandshakeDeadline = origDeadline }()
+
+	serverConn, agentConn := net.Pipe()
+	defer agentConn.Close()
+
+	reg := NewRegistry()
+	wrapped := &prefixConn{Conn: serverConn, prefix: proto.Magic[:]}
+	sess := reg.Allocate(wrapped, false)
+	if sess == nil {
+		t.Fatal("Allocate returned nil")
+	}
+
+	printer := newTestPrinter()
+	testKey := newTestServerKey(t)
+	opts := sessionOpts{
+		printer:   printer,
+		registry:  reg,
+		serverKey: testKey,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleAgentSession(sess, opts)
+	}()
+
+	// Agent sends nothing. handleAgentSession should time out and return.
+	select {
+	case <-done:
+		// Good — handshake timed out.
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleAgentSession did not time out on idle connection")
+	}
+
+	// Session should have been removed from the registry.
+	if reg.Get(sess.ID) != nil {
+		t.Error("session was not removed from registry after handshake timeout")
+	}
+}
+
 // TestHandleAgentSession_noServerKey verifies that handleAgentSession rejects
 // the connection immediately when no server key is configured.
 func TestHandleAgentSession_noServerKey(t *testing.T) {
@@ -434,5 +499,124 @@ func TestHandleAgentSession_noServerKey(t *testing.T) {
 	// Session should be gone.
 	if reg.Get(sess.ID) != nil {
 		t.Error("session was not removed from registry after missing server key")
+	}
+}
+
+// TestAgentSession_WriteErrorCleansUp verifies that when WriteMsgEncrypted
+// fails in the write loop, ALL pending tasks (not just the one that triggered
+// the error) receive an error result instead of being orphaned.
+func TestAgentSession_WriteErrorCleansUp(t *testing.T) {
+	serverConn, agentConn := net.Pipe()
+
+	reg := NewRegistry()
+	wrapped := &prefixConn{Conn: serverConn, prefix: proto.Magic[:]}
+	sess := reg.Allocate(wrapped, false)
+	if sess == nil {
+		t.Fatal("Allocate returned nil")
+	}
+
+	printer := newTestPrinter()
+	testKey := newTestServerKey(t)
+	opts := sessionOpts{
+		printer:   printer,
+		registry:  reg,
+		serverKey: testKey,
+	}
+
+	// Mock agent: complete handshake, read task1 (the server adds it to pending
+	// and writes it successfully), then close.  The server will have task1 in
+	// its pending map (no result sent).  When the server tries to write task2,
+	// the write fails and must clean up task1 as well.
+	task1Read := make(chan struct{})
+	agentDone := make(chan struct{})
+	go func() {
+		defer close(agentDone)
+		defer agentConn.Close()
+
+		cs, err := proto.NewClientCryptoSession(agentConn, "")
+		if err != nil {
+			t.Errorf("mock agent: crypto handshake: %v", err)
+			return
+		}
+		hello := proto.Hello{Version: "1.0", Hostname: "wtest"}
+		if err := proto.WriteMsgEncrypted(agentConn, cs, proto.MsgHello, hello); err != nil {
+			t.Errorf("mock agent: write hello: %v", err)
+			return
+		}
+		env, err := proto.ReadMsgEncrypted(agentConn, cs)
+		if err != nil || env.Type != proto.MsgWelcome {
+			t.Errorf("mock agent: read welcome failed")
+			return
+		}
+		// Read first task — server wrote it successfully, it's now in pending.
+		_, err = proto.ReadMsgEncrypted(agentConn, cs)
+		if err != nil {
+			t.Errorf("mock agent: read task1: %v", err)
+			return
+		}
+		close(task1Read)
+		// Do NOT send a result for task1. Close immediately so the next write fails.
+	}()
+
+	go handleAgentSession(sess, opts)
+
+	// Wait for session ready.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		sess.mu.Lock()
+		ready := sess.IsAgent && sess.agentTaskCh != nil
+		sess.mu.Unlock()
+		if ready {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Send first task — server writes it successfully, agent reads it.
+	result1Ch := make(chan proto.Result, 1)
+	sess.agentTaskCh <- agentTaskReq{
+		task:     proto.Task{ID: "task1", Kind: proto.TaskExec, Command: "id"},
+		resultCh: result1Ch,
+	}
+
+	// Wait until the mock agent has read task1 and closed the connection.
+	select {
+	case <-task1Read:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for mock agent to read task1")
+	}
+	<-agentDone // agent has closed its end
+
+	// Send second task — the write will fail because the conn is closed.
+	// task1 is still in pending (no result was ever sent).
+	result2Ch := make(chan proto.Result, 1)
+	sess.agentTaskCh <- agentTaskReq{
+		task:     proto.Task{ID: "task2", Kind: proto.TaskExec, Command: "whoami"},
+		resultCh: result2Ch,
+	}
+
+	// task1 MUST receive an error result (either from the write-error cleanup
+	// or the disconnect cleanup). This is the key assertion — without the fix,
+	// task1 would be orphaned.
+	timeout := time.After(5 * time.Second)
+
+	select {
+	case r := <-result1Ch:
+		if r.Error == "" {
+			t.Error("task1: expected non-empty error after cleanup")
+		}
+	case <-timeout:
+		t.Fatal("task1: timed out waiting for error result (orphaned pending task)")
+	}
+
+	// task2 may or may not be picked up by the write loop (depends on
+	// select scheduling). If it was, verify it got an error too.
+	select {
+	case r := <-result2Ch:
+		if r.Error == "" {
+			t.Error("task2: expected non-empty error after write failure")
+		}
+	case <-time.After(500 * time.Millisecond):
+		// Write loop returned via <-done before picking up task2 — acceptable.
 	}
 }

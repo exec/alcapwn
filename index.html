@@ -390,7 +390,7 @@
       Built for CTF.
     </p>
     <div class="badge-row">
-      <span class="badge red">Go 1.22+</span>
+      <span class="badge red">Go 1.25+</span>
       <span class="badge">Linux</span>
       <span class="badge">1–1024 sessions</span>
       <span class="badge">MIT license</span>
@@ -429,8 +429,9 @@
         <div class="method">one-liner (latest release)</div>
         <pre><span class="cmd-comment"># linux/amd64</span>
 <span class="cmd-prompt">$</span> <span class="cmd-text">curl</span> <span class="cmd-flag">-sL</span> <span class="cmd-arg">https://github.com/exec/alcapwn/releases/\
-latest/download/alcapwn-linux-amd64</span> \
-  <span class="cmd-flag">-o</span> alcapwn <span class="cmd-flag">&amp;&amp;</span> <span class="cmd-text">chmod</span> <span class="cmd-flag">+x</span> alcapwn</pre>
+latest/download/alcapwn-linux-amd64.tar.gz</span> \
+  | <span class="cmd-text">tar</span> <span class="cmd-arg">xz</span> <span class="cmd-flag">&amp;&amp;</span> <span class="cmd-text">chmod</span> <span class="cmd-flag">+x</span> alcapwn \
+  <span class="cmd-flag">&amp;&amp;</span> <span class="cmd-text">sudo</span> <span class="cmd-text">mv</span> alcapwn <span class="cmd-arg">/usr/local/bin/</span></pre>
       </div>
 
       <div class="install-card">
@@ -564,7 +565,7 @@ latest/download/alcapwn-linux-amd64</span> \
             <div class="roadmap-desc">Support stage0 (tiny payload) → stage1 (loader) → stage2 (full agent) with encryption and integrity verification between stages.</div>
           </div>
         </li>
-        <li class="roadmap-item tbd">
+        <li class="roadmap-item completed">
           <span class="roadmap-category">Callback Handling</span>
           <span class="tag c2">C2</span>
           <div>
@@ -572,20 +573,20 @@ latest/download/alcapwn-linux-amd64</span> \
             <div class="roadmap-desc">Run HTTP servers on various ports for beacon-based callbacks, with routing based on User-Agent, path, and request headers.</div>
           </div>
         </li>
-        <li class="roadmap-item tbd">
+        <li class="roadmap-item completed">
           <span class="roadmap-category">Pivot Support</span>
           <div>
             <span class="roadmap-title">TCP/HTTP/SOCKS5 proxy through sessions</span>
             <div class="roadmap-desc">Create pivot tunnels allowing the operator to access internal networks via established sessions as jump points.</div>
           </div>
         </li>
-        <li class="roadmap-item tbd">
+        <li class="roadmap-item completed">
           <span class="roadmap-category">Cryptography</span>
           <div>
             <span class="roadmap-title">AES-256-GCM encrypted channels</span>
           </div>
         </li>
-        <li class="roadmap-item tbd">
+        <li class="roadmap-item completed">
           <span class="roadmap-category">Obfuscation</span>
           <div>
             <span class="roadmap-title">Command obfuscation and encoding</span>

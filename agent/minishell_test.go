@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -495,6 +496,53 @@ func TestMiniShell_completeCommand(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("want 'exit' in completions for 'ex', got %v", matches)
+	}
+}
+
+// ── Redirection file handle tests ────────────────────────────────────────────
+
+func TestMinishell_RedirectionFilesClosed(t *testing.T) {
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "out.txt")
+
+	// Run a command with stdout redirection — openRedirections should return
+	// the opened file and the caller should close it after cmd.Run.
+	st := pipelineStage{
+		args:       []string{"echo", "leaked?"},
+		stdoutFile: outFile,
+	}
+	cmd := exec.Command(st.args[0], st.args[1:]...)
+	opened, err := openRedirections(cmd, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opened) == 0 {
+		t.Fatal("openRedirections should return the opened files")
+	}
+
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Close all opened files.
+	for _, f := range opened {
+		if err := f.Close(); err != nil {
+			t.Fatalf("file should still be open and closable: %v", err)
+		}
+	}
+
+	// Verify the output was written.
+	data, _ := os.ReadFile(outFile)
+	if !strings.Contains(string(data), "leaked?") {
+		t.Fatalf("want 'leaked?' in output file, got %q", data)
+	}
+
+	// Closing again should fail — proves the file was properly closed above.
+	for _, f := range opened {
+		err := f.Close()
+		if err == nil {
+			t.Fatal("double close should error — file was already closed")
+		}
 	}
 }
 
