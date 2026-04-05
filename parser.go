@@ -51,18 +51,7 @@ func newFindings() *Findings {
 		ToolsAvailable:   []string{},
 		CveCandidates:    []CveCandidate{},
 		InterestingFiles: []string{},
-		ServiceVersions: ServiceVersions{
-			Apache:       nil,
-			Nginx:        nil,
-			PHP:          nil,
-			Python:       nil,
-			Node:         nil,
-			Docker:       nil,
-			MySQL:        nil,
-			Postgres:     nil,
-			GitLabRunner: nil,
-		},
-		EnvSecrets:         []string{},
+		EnvSecrets:       []string{},
 	}
 }
 
@@ -306,7 +295,6 @@ func (p *ReconParser) parseWritableCrons(output string) []string {
 }
 
 func (p *ReconParser) parseToolsAvailable(output string) []string {
-	tools := []string{}
 	toolNames := map[string]bool{
 		"python":  true,
 		"python3": true,
@@ -323,34 +311,19 @@ func (p *ReconParser) parseToolsAvailable(output string) []string {
 		"zsh":     true,
 	}
 
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
+	var tools []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "/") {
 			continue
 		}
-		// Extract just the binary name from the path
-		binary := line
-		lastSlash := strings.LastIndex(line, "/")
-		if lastSlash >= 0 {
-			binary = line[lastSlash+1:]
-		}
-		binary = strings.TrimSpace(binary)
-		if toolNames[binary] {
-			// Avoid duplicates
-			found := false
-			for _, t := range tools {
-				if t == binary {
-					found = true
-					break
-				}
-			}
-			if !found {
-				tools = append(tools, binary)
-			}
+		binary := strings.TrimSpace(line[strings.LastIndex(line, "/")+1:])
+		if toolNames[binary] && !seen[binary] {
+			seen[binary] = true
+			tools = append(tools, binary)
 		}
 	}
-
 	return tools
 }
 
@@ -382,7 +355,7 @@ type containerDetectionResult struct {
 }
 
 func (p *ReconParser) parseContainerDetection(output string) containerDetectionResult {
-	result := containerDetectionResult{detected: false, containerType: nil}
+	var result containerDetectionResult
 
 	// Check for Docker indicators
 	if strings.Contains(output, ".dockerenv") || strings.Contains(output, "/.dockerenv") {
@@ -423,7 +396,7 @@ type dockerSocketDetectionResult struct {
 }
 
 func (p *ReconParser) parseDockerSocketDetection(output string) dockerSocketDetectionResult {
-	result := dockerSocketDetectionResult{socketPath: nil, socketAccessible: false}
+	var result dockerSocketDetectionResult
 
 	// Check for Docker socket paths - only if file exists (not "not found")
 	if strings.Contains(output, "/var/run/docker.sock") && !strings.Contains(output, "/var/run/docker.sock not found") {
@@ -443,17 +416,7 @@ func (p *ReconParser) parseDockerSocketDetection(output string) dockerSocketDete
 }
 
 func (p *ReconParser) parseServiceVersions(output string) ServiceVersions {
-	result := ServiceVersions{
-		Apache:       nil,
-		Nginx:        nil,
-		PHP:          nil,
-		Python:       nil,
-		Node:         nil,
-		Docker:       nil,
-		MySQL:        nil,
-		Postgres:     nil,
-		GitLabRunner: nil,
-	}
+	var result ServiceVersions
 
 	// Parse Apache version
 	if match := reApache.FindStringSubmatch(output); match != nil {
@@ -523,13 +486,7 @@ type identityInfo struct {
 }
 
 func (p *ReconParser) parseIdentity(output string) identityInfo {
-	result := identityInfo{
-		hostname:      nil,
-		user:          nil,
-		uid:           nil,
-		os:            nil,
-		kernelVersion: nil,
-	}
+	var result identityInfo
 
 	// Extract hostname
 	if match := reHostname.FindStringSubmatch(output); match != nil {
@@ -786,7 +743,12 @@ func (p *ReconParser) checkCVECandidates(f *Findings, sections map[string]string
 					Name:        "Environment Variable Secret",
 					Description: "Sensitive credential in environment variables",
 					Severity:    "high",
-					Evidence:    fmt.Sprintf("Secret found: %s", truncate(line, 50)),
+					Evidence:    fmt.Sprintf("Secret found in variable: %s", func() string {
+					if idx := strings.Index(line, "="); idx >= 0 {
+						return strings.TrimSpace(line[:idx])
+					}
+					return "<unknown>"
+				}()),
 					Confidence:  "high",
 				})
 				break
@@ -833,7 +795,7 @@ func parsePolkitInfo(output string) polkitInfo {
 		}
 		rev, _ := stringToInt(m[4])
 		patched := !versionBefore(major, minor, patch, 0, 0, 120, 0, 0) ||
-			(major == 0 && minor == 105 && !hasPatch && rev >= 33)
+			(major == 0 && minor == 105 && rev >= 33)
 		return polkitInfo{
 			havePackageVersion: true,
 			isPatched:          patched,
@@ -851,7 +813,7 @@ func parsePolkitInfo(output string) polkitInfo {
 		}
 		rev, _ := stringToInt(m[4])
 		patched := !versionBefore(major, minor, patch, 0, 0, 120, 0, 0) ||
-			(major == 0 && minor == 117 && !hasPatch && rev >= 2)
+			(major == 0 && minor == 117 && rev >= 2)
 		return polkitInfo{
 			havePackageVersion: true,
 			isPatched:          patched,
@@ -901,9 +863,9 @@ func stringPtr(s string) *string {
 }
 
 func stringToInt(s string) (int, bool) {
-	var result int
-	_, err := fmt.Sscanf(s, "%d", &result)
-	return result, err == nil
+	var v int
+	_, err := fmt.Sscanf(s, "%d", &v)
+	return v, err == nil
 }
 
 func truncate(s string, maxLen int) string {

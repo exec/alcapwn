@@ -24,7 +24,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -559,5 +561,500 @@ func TestHTTPListenerTLS_PlainClientRejected(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode < 400 {
 		t.Fatalf("expected rejection (4xx/5xx or error), got status %d", resp.StatusCode)
+	}
+}
+
+// ── TestHTTPRegister_concurrent ─────────────────────────────────────────────
+//
+// Register 5 agents in parallel. Verify all get unique tokens and session IDs.
+
+func TestHTTPRegister_concurrent(t *testing.T) {
+	serverKey := newTestServerKey(t)
+	c := newTestConsoleHTTP(t, serverKey)
+
+	const N = 5
+	type regResult struct {
+		token     string
+		sessionID int
+		err       error
+	}
+	results := make([]regResult, N)
+	var wg sync.WaitGroup
+	wg.Add(N)
+
+	for i := 0; i < N; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			agentPriv, err := ecdh.X25519().GenerateKey(crand.Reader)
+			if err != nil {
+				results[idx] = regResult{err: err}
+				return
+			}
+			hello := proto.Hello{
+				Version:  "v3",
+				Hostname: fmt.Sprintf("host-%d", idx),
+				OS:       "linux",
+				Arch:     "amd64",
+				UID:      fmt.Sprintf("%d", 1000+idx),
+			}
+			token, _, welcome := registerAgent(t, c, agentPriv, hello)
+			results[idx] = regResult{token: token, sessionID: welcome.SessionID}
+		}(i)
+	}
+	wg.Wait()
+
+	tokens := make(map[string]struct{}, N)
+	sessionIDs := make(map[int]struct{}, N)
+	for i, r := range results {
+		if r.err != nil {
+			t.Fatalf("agent %d registration error: %v", i, r.err)
+		}
+		if r.token == "" {
+			t.Fatalf("agent %d got empty token", i)
+		}
+		if r.sessionID == 0 {
+			t.Fatalf("agent %d got session ID 0", i)
+		}
+		if _, dup := tokens[r.token]; dup {
+			t.Fatalf("agent %d has duplicate token %q", i, r.token)
+		}
+		tokens[r.token] = struct{}{}
+		if _, dup := sessionIDs[r.sessionID]; dup {
+			t.Fatalf("agent %d has duplicate session ID %d", i, r.sessionID)
+		}
+		sessionIDs[r.sessionID] = struct{}{}
+	}
+}
+
+// ── TestHTTPBeacon_concurrentPoll ────────────────────────────────────────────
+//
+// Register an agent, dispatch 3 tasks, have 3 goroutines poll simultaneously.
+// Verify each gets a different task (tests the map-based httpInFlight).
+
+func TestHTTPBeacon_concurrentPoll(t *testing.T) {
+	serverKey := newTestServerKey(t)
+	c := newTestConsoleHTTP(t, serverKey)
+
+	agentPriv, err := ecdh.X25519().GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatalf("generate agent key: %v", err)
+	}
+	token, _, _ := registerAgent(t, c, agentPriv, proto.Hello{
+		Version: "v3", Hostname: "concurrent-poll", OS: "linux", Arch: "amd64",
+	})
+
+	sess := c.registry.LookupHTTPToken(token)
+	if sess == nil {
+		t.Fatal("session not found after register")
+	}
+
+	// Dispatch 3 tasks into the session task channel.
+	const numTasks = 3
+	for i := 0; i < numTasks; i++ {
+		task := proto.Task{
+			ID:      agentTaskID("cp"),
+			Kind:    proto.TaskExec,
+			Command: fmt.Sprintf("cmd-%d", i),
+		}
+		resultCh := make(chan proto.Result, 1)
+		sess.agentTaskCh <- agentTaskReq{task: task, resultCh: resultCh}
+	}
+
+	// Wait briefly for all tasks to be enqueued.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sess.mu.Lock()
+		n := len(sess.agentTaskCh)
+		sess.mu.Unlock()
+		if n >= numTasks {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// 3 goroutines poll simultaneously.
+	type pollResult struct {
+		code   int
+		taskID string
+	}
+	pollResults := make([]pollResult, numTasks)
+	var wg sync.WaitGroup
+	wg.Add(numTasks)
+
+	for i := 0; i < numTasks; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/beacon/"+token, nil)
+			req.RemoteAddr = "127.0.0.1:12345"
+			w := httptest.NewRecorder()
+			c.handleHTTPBeacon(w, req)
+			pollResults[idx].code = w.Code
+
+			if w.Code == http.StatusOK {
+				// We cannot decrypt without the agent CS, but we can verify
+				// the task was stored in httpInFlight by checking the map.
+				// Instead, just record that we got a 200.
+				pollResults[idx].taskID = fmt.Sprintf("task-%d", idx) // placeholder
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// All 3 polls should have returned 200 (each dequeued one task).
+	okCount := 0
+	for _, pr := range pollResults {
+		if pr.code == http.StatusOK {
+			okCount++
+		}
+	}
+	if okCount != numTasks {
+		t.Fatalf("expected %d polls with status 200, got %d", numTasks, okCount)
+	}
+
+	// httpInFlight should have exactly 3 entries (one per task).
+	sess.httpInflightMu.Lock()
+	inflightCount := len(sess.httpInFlight)
+	sess.httpInflightMu.Unlock()
+	if inflightCount != numTasks {
+		t.Fatalf("expected %d in-flight tasks, got %d", numTasks, inflightCount)
+	}
+}
+
+// ── TestHTTPBeacon_resultUnknownTaskID ───────────────────────────────────────
+//
+// Register, poll a task, then submit a result with a wrong task ID.
+// The production code returns 200 OK (the unknown result is silently dropped).
+// This test documents that behavior. If future code changes to return 400,
+// update this test accordingly.
+
+func TestHTTPBeacon_resultUnknownTaskID(t *testing.T) {
+	serverKey := newTestServerKey(t)
+	c := newTestConsoleHTTP(t, serverKey)
+
+	agentPriv, err := ecdh.X25519().GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatalf("generate agent key: %v", err)
+	}
+	token, agentCS, _ := registerAgent(t, c, agentPriv, proto.Hello{
+		Version: "v3", Hostname: "unknown-task", OS: "linux", Arch: "amd64", UID: "0",
+	})
+
+	sess := c.registry.LookupHTTPToken(token)
+	if sess == nil {
+		t.Fatal("session not found")
+	}
+
+	// Dispatch a task and poll it so there is something in httpInFlight.
+	task := proto.Task{ID: agentTaskID("ut"), Kind: proto.TaskExec, Command: "id"}
+	resultCh := make(chan proto.Result, 1)
+	sess.agentTaskCh <- agentTaskReq{task: task, resultCh: resultCh}
+
+	// Wait for task to be in channel.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sess.mu.Lock()
+		n := len(sess.agentTaskCh)
+		sess.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Poll to dequeue the task into httpInFlight.
+	getReq := httptest.NewRequest(http.MethodGet, "/beacon/"+token, nil)
+	getReq.RemoteAddr = "127.0.0.1:12345"
+	getW := httptest.NewRecorder()
+	c.handleHTTPBeacon(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("poll: expected 200, got %d", getW.Code)
+	}
+
+	// Submit a result with a WRONG task ID.
+	wrongResult := proto.Result{TaskID: "nonexistent-task-id", Output: []byte("pwned"), Exit: 0}
+	var resultBuf bytes.Buffer
+	if err := proto.WriteMsgEncrypted(&resultBuf, agentCS, proto.MsgResult, wrongResult); err != nil {
+		t.Fatalf("WriteMsgEncrypted: %v", err)
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/beacon/"+token, &resultBuf)
+	postReq.RemoteAddr = "127.0.0.1:12345"
+	postW := httptest.NewRecorder()
+	c.handleHTTPBeacon(postW, postReq)
+
+	// Current production behavior: unknown task ID → 200 OK (result silently dropped).
+	if postW.Code != http.StatusOK {
+		t.Fatalf("expected 200 for unknown task ID, got %d", postW.Code)
+	}
+
+	// The original in-flight task should still be pending (not resolved).
+	sess.httpInflightMu.Lock()
+	_, stillInflight := sess.httpInFlight[task.ID]
+	sess.httpInflightMu.Unlock()
+	if !stillInflight {
+		t.Fatal("original task was incorrectly removed from in-flight map")
+	}
+}
+
+// ── TestHTTPRegister_oversizedBody ──────────────────────────────────────────
+//
+// Send a registration body larger than 32 + 4096 bytes. The io.LimitReader
+// in handleHTTPRegister truncates the body, causing JSON parse failure → 400.
+
+func TestHTTPRegister_oversizedBody(t *testing.T) {
+	serverKey := newTestServerKey(t)
+	c := newTestConsoleHTTP(t, serverKey)
+
+	agentPriv, err := ecdh.X25519().GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatalf("generate agent key: %v", err)
+	}
+
+	// Build a body that exceeds the 32 + 4096 limit.
+	// 32 bytes pubkey + 8192 bytes of valid-looking but oversized JSON.
+	bigJSON := `{"version":"v3","hostname":"` + strings.Repeat("A", 8000) + `"}`
+	body := append(agentPriv.PublicKey().Bytes(), []byte(bigJSON)...)
+
+	req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:12345"
+	w := httptest.NewRecorder()
+	c.handleHTTPRegister(w, req)
+
+	// The LimitReader truncates at 32+4096=4128 bytes. The JSON is cut mid-string,
+	// causing json.Unmarshal to fail → 400 "bad hello".
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized body, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── TestHTTPDownload ────────────────────────────────────────────────────────
+//
+// Tests for the download handler: valid download, invalid token, path traversal,
+// and unregistered file.
+//
+// For non-TLS listeners with port :0, the production code does not re-key the
+// registry entry to the real bound address (only the TLS path does). To work
+// around this without modifying production code, we allocate a free port first
+// and then start the listener on that exact port.
+
+// freePort returns a free TCP port on localhost by binding and immediately closing.
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("freePort: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	return port
+}
+
+func TestHTTPDownload_validFile(t *testing.T) {
+	serverKey := newTestServerKey(t)
+	c := newTestConsoleHTTP(t, serverKey)
+
+	// Create a temp directory with a test file.
+	tmpDir := t.TempDir()
+	testContent := []byte("this is the agent binary")
+	testFile := "agent.exe"
+	if err := os.WriteFile(filepath.Join(tmpDir, testFile), testContent, 0644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	// Start listener with download dir on a known port.
+	port := freePort(t)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	if err := c.StartHTTPListener(addr, "", "", tmpDir, nil); err != nil {
+		t.Fatalf("StartHTTPListener: %v", err)
+	}
+	t.Cleanup(func() { _ = c.StopHTTPListener(addr) })
+
+	// Wait briefly for the goroutine to start serving.
+	time.Sleep(50 * time.Millisecond)
+
+	// Look up the download token from the registry.
+	c.httpListeners.mu.Lock()
+	entry := c.httpListeners.listeners[addr]
+	c.httpListeners.mu.Unlock()
+	if entry == nil {
+		t.Fatal("listener entry not found")
+	}
+	downloadToken := entry.downloadToken
+
+	// Register the file in the whitelist.
+	if err := c.RegisterDownload(addr, testFile); err != nil {
+		t.Fatalf("RegisterDownload: %v", err)
+	}
+
+	// Request with valid token and registered filename → 200.
+	client := &http.Client{Timeout: 5 * time.Second}
+	url := fmt.Sprintf("http://%s/download/%s/%s", addr, downloadToken, testFile)
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("GET download: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestHTTPDownload_invalidToken(t *testing.T) {
+	serverKey := newTestServerKey(t)
+	c := newTestConsoleHTTP(t, serverKey)
+
+	tmpDir := t.TempDir()
+	port := freePort(t)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	if err := c.StartHTTPListener(addr, "", "", tmpDir, nil); err != nil {
+		t.Fatalf("StartHTTPListener: %v", err)
+	}
+	t.Cleanup(func() { _ = c.StopHTTPListener(addr) })
+	time.Sleep(50 * time.Millisecond)
+
+	// Request with a wrong token. Since the mux is registered with the real
+	// download path, a request to /download/WRONG/file won't even match
+	// the handler and gets a 404 from the default mux.
+	client := &http.Client{Timeout: 5 * time.Second}
+	url := fmt.Sprintf("http://%s/download/badtoken/agent.exe", addr)
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("GET download: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for invalid token, got %d", resp.StatusCode)
+	}
+}
+
+func TestHTTPDownload_pathTraversal(t *testing.T) {
+	serverKey := newTestServerKey(t)
+	c := newTestConsoleHTTP(t, serverKey)
+
+	tmpDir := t.TempDir()
+	port := freePort(t)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	if err := c.StartHTTPListener(addr, "", "", tmpDir, nil); err != nil {
+		t.Fatalf("StartHTTPListener: %v", err)
+	}
+	t.Cleanup(func() { _ = c.StopHTTPListener(addr) })
+	time.Sleep(50 * time.Millisecond)
+
+	c.httpListeners.mu.Lock()
+	entry := c.httpListeners.listeners[addr]
+	c.httpListeners.mu.Unlock()
+	downloadToken := entry.downloadToken
+
+	// Path traversal attempt: ../etc/passwd
+	// The handler calls filepath.Base() which strips the path traversal to "passwd".
+	// Then allowedFiles check rejects it → 403.
+	client := &http.Client{Timeout: 5 * time.Second}
+	url := fmt.Sprintf("http://%s/download/%s/../etc/passwd", addr, downloadToken)
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("GET download traversal: %v", err)
+	}
+	resp.Body.Close()
+	// filepath.Base("../etc/passwd") = "passwd", which is not in the whitelist → 403.
+	// Note: net/http may also clean the URL path before it reaches the handler.
+	// Accept 400, 403, or 404 as evidence that the traversal was blocked.
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("path traversal attempt returned 200 OK — security issue")
+	}
+}
+
+func TestHTTPDownload_unregisteredFile(t *testing.T) {
+	serverKey := newTestServerKey(t)
+	c := newTestConsoleHTTP(t, serverKey)
+
+	tmpDir := t.TempDir()
+	// Create the file on disk but do NOT register it in the whitelist.
+	if err := os.WriteFile(filepath.Join(tmpDir, "secret.txt"), []byte("secret"), 0644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	port := freePort(t)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	if err := c.StartHTTPListener(addr, "", "", tmpDir, nil); err != nil {
+		t.Fatalf("StartHTTPListener: %v", err)
+	}
+	t.Cleanup(func() { _ = c.StopHTTPListener(addr) })
+	time.Sleep(50 * time.Millisecond)
+
+	c.httpListeners.mu.Lock()
+	entry := c.httpListeners.listeners[addr]
+	c.httpListeners.mu.Unlock()
+	downloadToken := entry.downloadToken
+
+	// File exists on disk but is not whitelisted → 403.
+	client := &http.Client{Timeout: 5 * time.Second}
+	url := fmt.Sprintf("http://%s/download/%s/secret.txt", addr, downloadToken)
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("GET download: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for unregistered file, got %d", resp.StatusCode)
+	}
+}
+
+// ── TestStopHTTPListener ────────────────────────────────────────────────────
+//
+// Start a listener, stop it, verify the port is freed (can re-bind).
+
+func TestStopHTTPListener(t *testing.T) {
+	serverKey := newTestServerKey(t)
+	c := newTestConsoleHTTP(t, serverKey)
+
+	port := freePort(t)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	if err := c.StartHTTPListener(addr, "", "", "", nil); err != nil {
+		t.Fatalf("StartHTTPListener: %v", err)
+	}
+
+	// Wait for the server goroutine to start.
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify the port is occupied: try to listen on it directly.
+	ln, err := net.Listen("tcp", addr)
+	if err == nil {
+		ln.Close()
+		t.Fatal("expected port to be occupied, but net.Listen succeeded")
+	}
+
+	// Stop the listener.
+	if err := c.StopHTTPListener(addr); err != nil {
+		t.Fatalf("StopHTTPListener: %v", err)
+	}
+
+	// Give the OS a moment to release the port.
+	time.Sleep(50 * time.Millisecond)
+
+	// Now the port should be free.
+	ln, err = net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("expected port to be free after stop, but net.Listen failed: %v", err)
+	}
+	ln.Close()
+
+	// Registry should no longer contain the listener.
+	c.httpListeners.mu.Lock()
+	_, stillRegistered := c.httpListeners.listeners[addr]
+	c.httpListeners.mu.Unlock()
+	if stillRegistered {
+		t.Fatal("listener still in registry after StopHTTPListener")
+	}
+}
+
+// ── TestStopHTTPListener_notFound ───────────────────────────────────────────
+
+func TestStopHTTPListener_notFound(t *testing.T) {
+	serverKey := newTestServerKey(t)
+	c := newTestConsoleHTTP(t, serverKey)
+
+	err := c.StopHTTPListener("127.0.0.1:99999")
+	if err == nil {
+		t.Fatal("expected error for non-existent listener")
 	}
 }

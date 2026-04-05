@@ -1,5 +1,9 @@
 # alcapwn — TODO
 
+> **Warning: Wire format break in v2.0.0-rc1:** AES-256-GCM now binds the 4-byte
+> length prefix as AAD. Agents built before this version cannot communicate
+> with servers built after it. All agents must be rebuilt.
+
 ---
 
 ## Audit findings (2026-03-17, publish-readiness review)
@@ -75,11 +79,14 @@ Issues ordered by severity. Tags: **[SEC]** security, **[PERF]** performance,
       scans forward to the ST terminator (`\x1b\\` or `\x07`) and discards
       the full sequence body, matching the OSC handler. (`cmd_sessions.go`)
 
-- ~~**[SEC] Nonce counter overflow / reuse**~~ — *false positive*: the
-      implementation already uses two independent AES keys (one per direction,
-      derived from separate HKDF labels). Nonce 0 under key₁ is only ever used
-      by the server; nonce 0 under key₂ is only ever used by the agent. No
-      collision is possible.
+- [x] **[SEC] Nonce counter overflow / reuse** — *not* a false positive:
+      two independent keys prevent cross-direction reuse, but a single
+      direction's nonce wraps at 2^96 (silent, catastrophic for GCM).
+      Fixed: `incrementNonce` now returns error at 2^32 invocations per
+      NIST SP 800-38D. Also replaced hand-rolled HKDF with
+      `golang.org/x/crypto/hkdf`, added length prefix as AAD to GCM
+      Seal/Open, and added error handling to `LoadOrCreateServerKey`
+      (was silently regenerating on corrupt file). (`proto/crypto.go`)
 
 - **[SEC] Relay listener binds 0.0.0.0** — relay must be reachable by the
       remote agent, so 0.0.0.0 is intentional. The relay token auth (above)
@@ -129,8 +136,11 @@ Issues ordered by severity. Tags: **[SEC]** security, **[PERF]** performance,
 - [x] **[PERF] Bubble sort in `matchFindings`** — replaced O(n²) hand-rolled
       bubble sort with `sort.Slice`. (`dataset.go`)
 
-- ~~**[PERF] `sortSessions` acquires `persistMu` inside `sort.Slice`**~~ —
-      *false positive*: no such function exists in the codebase.
+- [x] **[PERF] `sortSessions` acquires `persistMu` inside `sort.Slice`** —
+      *not* a false positive: the `"match_count"` sort case in `cmdSessions`
+      acquired the lock inside every comparator call — O(N·M·logN) lock
+      acquisitions. Fixed: pre-compute match counts into a map before sorting.
+      (`cmd_sessions.go`)
 
 - [ ] **[ROBUST] `displayGroupedSessions` duplicates display logic** —
       ~60 lines of row-formatting code duplicated between `displaySessions`
@@ -157,8 +167,9 @@ Issues ordered by severity. Tags: **[SEC]** security, **[PERF]** performance,
 
 ### Low
 
-- [ ] **[REUSE] Stale dependencies** — `golang.org/x/sys` and
-      `golang.org/x/term` at v0.18.0 (early 2024). Run `go get -u ./...`.
+- [x] **[REUSE] Stale dependencies** — updated `golang.org/x/sys` v0.18→v0.30,
+      `golang.org/x/term` v0.18→v0.29, added `golang.org/x/crypto` v0.33
+      (replaces hand-rolled HKDF). Fixed `// indirect` markers via `go mod tidy`.
 
 - [ ] **[ROBUST] Session limit is hardcoded 1024** — fine for CTF; add a
       `--max-sessions` flag or at least a clearer error if hit in production.
@@ -171,8 +182,9 @@ Issues ordered by severity. Tags: **[SEC]** security, **[PERF]** performance,
 - [x] **[ROBUST] `containsAnsiSequences` has off-by-one** — changed loop
       guard from `i < len(s)-2` to `i+2 < len(s)`. (`cmd_sessions.go`)
 
-- [ ] **[REUSE] No `go vet` / `staticcheck` in CI** — add linter step to the
-      test harness (`go vet ./...` at minimum).
+- [x] **[REUSE] No `go vet` / `staticcheck` in CI** — `go vet` was already
+      present in the lint job. Added `go test -race ./...` as a dedicated test
+      job. `staticcheck` still not wired. (`.github/workflows/ci.yml`)
 
 ---
 
@@ -201,6 +213,12 @@ Issues ordered by severity. Tags: **[SEC]** security, **[PERF]** performance,
 - Built-in minishell (MiniExec + MiniShell.Run()) — zero-dep, all arches, tab completion
 - Security: all remote strings through `stripDangerousAnsi()` before terminal output
 - Full test suite: unit tests with `-race`, 40+ integration harness tests
+- **v2.0.0-rc1 code review** (2026-04-04): 40+ fixes across crypto, agent,
+  commands, CI/CD. Nonce overflow hardening, stdlib HKDF, GCM AAD binding,
+  IPv6 fixes, agent robustness (size limits, deadlines, fd leak fixes),
+  command handler cleanup. 12 new test files (~1500 lines), test count ~40→337.
+  CI now runs `go test -race`; releases include SHA-256 checksums.
+  `fdset_linux.go` made portable across 32/64-bit GOARCH.
 
 ---
 
