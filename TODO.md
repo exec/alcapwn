@@ -1,5 +1,9 @@
 # alcapwn — TODO
 
+> **Warning: Wire format break in v2.0.0-rc1:** AES-256-GCM now binds the 4-byte
+> length prefix as AAD. Agents built before this version cannot communicate
+> with servers built after it. All agents must be rebuilt.
+
 ---
 
 ## Audit findings (2026-03-17, publish-readiness review)
