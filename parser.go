@@ -781,12 +781,17 @@ func (p *ReconParser) checkCVECandidates(f *Findings, sections map[string]string
 		for _, line := range envOutputLines {
 			if strings.Contains(strings.ToLower(line), pattern) && strings.Contains(line, "=") {
 				f.EnvSecrets = append(f.EnvSecrets, strings.TrimSpace(line))
+				// Redact the value — only include the variable name in evidence.
+				varName := line
+				if eqIdx := strings.Index(line, "="); eqIdx >= 0 {
+					varName = line[:eqIdx] + "=<redacted>"
+				}
 				candidates = append(candidates, CveCandidate{
 					CVE:         "ENV-SECRET",
 					Name:        "Environment Variable Secret",
 					Description: "Sensitive credential in environment variables",
 					Severity:    "high",
-					Evidence:    fmt.Sprintf("Secret found: %s", truncate(line, 50)),
+					Evidence:    fmt.Sprintf("Secret found: %s", truncate(varName, 50)),
 					Confidence:  "high",
 				})
 				break
