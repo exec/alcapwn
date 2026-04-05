@@ -524,4 +524,31 @@ func TestParsePolkitInfo(t *testing.T) {
 			t.Errorf("expected empty versionStr, got %q", info.versionStr)
 		}
 	})
+
+	t.Run("dpkg patch component does not cause false negative", func(t *testing.T) {
+		// polkit 0.105.0-33 (with .0 patch component) should be detected as
+		// patched, same as 0.105-33. The hasPatch=true case must not prevent
+		// the revision check from firing.
+		output := "polkit-pkg: polkit 0.105.0-33ubuntu1"
+		info := parsePolkitInfo(output)
+		if !info.havePackageVersion {
+			t.Error("expected havePackageVersion to be true")
+		}
+		if !info.isPatched {
+			t.Error("expected isPatched to be true for 0.105.0-33 (patch component should not block rev check)")
+		}
+	})
+
+	t.Run("rpm patch component does not cause false negative", func(t *testing.T) {
+		// polkit 0.117.0-2 (with .0 patch component) should be detected as
+		// patched, same as 0.117-2. Same bug pattern as dpkg.
+		output := "polkit-0.117.0-2.fc33.x86_64"
+		info := parsePolkitInfo(output)
+		if !info.havePackageVersion {
+			t.Error("expected havePackageVersion to be true")
+		}
+		if !info.isPatched {
+			t.Error("expected isPatched to be true for 0.117.0-2 (patch component should not block rev check)")
+		}
+	})
 }

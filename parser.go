@@ -833,7 +833,7 @@ func parsePolkitInfo(output string) polkitInfo {
 		}
 		rev, _ := stringToInt(m[4])
 		patched := !versionBefore(major, minor, patch, 0, 0, 120, 0, 0) ||
-			(major == 0 && minor == 105 && !hasPatch && rev >= 33)
+			(major == 0 && minor == 105 && rev >= 33)
 		return polkitInfo{
 			havePackageVersion: true,
 			isPatched:          patched,
@@ -851,7 +851,7 @@ func parsePolkitInfo(output string) polkitInfo {
 		}
 		rev, _ := stringToInt(m[4])
 		patched := !versionBefore(major, minor, patch, 0, 0, 120, 0, 0) ||
-			(major == 0 && minor == 117 && !hasPatch && rev >= 2)
+			(major == 0 && minor == 117 && rev >= 2)
 		return polkitInfo{
 			havePackageVersion: true,
 			isPatched:          patched,
