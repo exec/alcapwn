@@ -174,6 +174,15 @@ func executeTask(task proto.Task) proto.Result {
 		}
 
 	case proto.TaskDownload:
+		fi, err := os.Stat(task.Path)
+		if err != nil {
+			res.Error = err.Error()
+			break
+		}
+		if fi.Size() > proto.MaxBodySize {
+			res.Error = fmt.Sprintf("file too large: %d bytes (max %d)", fi.Size(), proto.MaxBodySize)
+			break
+		}
 		data, err := os.ReadFile(task.Path)
 		if err != nil {
 			res.Error = err.Error()

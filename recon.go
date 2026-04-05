@@ -410,11 +410,7 @@ var reconSections = []string{
 func makeReconNonce() [16]byte {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback for systems without crypto/rand (e.g., embedded)
-		// Not secure, but functional
-		for i := range b {
-			b[i] = byte(i)
-		}
+		panic("crypto/rand failed: " + err.Error())
 	}
 	var nonce [16]byte
 	copy(nonce[:], b)
@@ -436,7 +432,7 @@ func computeSectionHash(nonce [16]byte, sectionNum int) string {
 func buildReconScript(nonce [16]byte) string {
 	script := reconScriptTemplate
 	// Replace each section header with its HMAC-obfuscated version
-	for i := 1; i <= 13; i++ {
+	for i := 1; i <= len(reconSections); i++ {
 		hash := computeSectionHash(nonce, i)
 		// Use a unique placeholder that won't appear in the script normally
 		placeholder := fmt.Sprintf("{{HASH_%d}}", i)

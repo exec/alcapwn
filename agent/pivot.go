@@ -30,13 +30,21 @@ func runRelay(target, relayAddr string) error {
 	go func() {
 		defer wg.Done()
 		io.Copy(targetConn, relayConn)
-		targetConn.(*net.TCPConn).CloseWrite()
+		closeWrite(targetConn)
 	}()
 	go func() {
 		defer wg.Done()
 		io.Copy(relayConn, targetConn)
-		relayConn.(*net.TCPConn).CloseWrite()
+		closeWrite(relayConn)
 	}()
 	wg.Wait()
 	return nil
+}
+
+// closeWrite sends a TCP half-close if the connection supports it.
+// Safe to call on any net.Conn — non-TCP connections are silently skipped.
+func closeWrite(c net.Conn) {
+	if tc, ok := c.(*net.TCPConn); ok {
+		tc.CloseWrite()
+	}
 }

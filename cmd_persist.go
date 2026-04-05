@@ -485,7 +485,7 @@ WantedBy=multi-user.target" > /etc/systemd/system/alcapwn.service && systemctl e
 
 	if isAgent {
 		res, err := agentDispatch(sess, proto.Task{
-			ID:      agentTaskID("persist", method),
+			ID:      agentTaskID("persist"),
 			Kind:    proto.TaskExec,
 			Command: cmd,
 		}, 15*time.Second)
