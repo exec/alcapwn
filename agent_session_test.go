@@ -501,3 +501,122 @@ func TestHandleAgentSession_noServerKey(t *testing.T) {
 		t.Error("session was not removed from registry after missing server key")
 	}
 }
+
+// TestAgentSession_WriteErrorCleansUp verifies that when WriteMsgEncrypted
+// fails in the write loop, ALL pending tasks (not just the one that triggered
+// the error) receive an error result instead of being orphaned.
+func TestAgentSession_WriteErrorCleansUp(t *testing.T) {
+	serverConn, agentConn := net.Pipe()
+
+	reg := NewRegistry()
+	wrapped := &prefixConn{Conn: serverConn, prefix: proto.Magic[:]}
+	sess := reg.Allocate(wrapped, false)
+	if sess == nil {
+		t.Fatal("Allocate returned nil")
+	}
+
+	printer := newTestPrinter()
+	testKey := newTestServerKey(t)
+	opts := sessionOpts{
+		printer:   printer,
+		registry:  reg,
+		serverKey: testKey,
+	}
+
+	// Mock agent: complete handshake, read task1 (the server adds it to pending
+	// and writes it successfully), then close.  The server will have task1 in
+	// its pending map (no result sent).  When the server tries to write task2,
+	// the write fails and must clean up task1 as well.
+	task1Read := make(chan struct{})
+	agentDone := make(chan struct{})
+	go func() {
+		defer close(agentDone)
+		defer agentConn.Close()
+
+		cs, err := proto.NewClientCryptoSession(agentConn, "")
+		if err != nil {
+			t.Errorf("mock agent: crypto handshake: %v", err)
+			return
+		}
+		hello := proto.Hello{Version: "1.0", Hostname: "wtest"}
+		if err := proto.WriteMsgEncrypted(agentConn, cs, proto.MsgHello, hello); err != nil {
+			t.Errorf("mock agent: write hello: %v", err)
+			return
+		}
+		env, err := proto.ReadMsgEncrypted(agentConn, cs)
+		if err != nil || env.Type != proto.MsgWelcome {
+			t.Errorf("mock agent: read welcome failed")
+			return
+		}
+		// Read first task — server wrote it successfully, it's now in pending.
+		_, err = proto.ReadMsgEncrypted(agentConn, cs)
+		if err != nil {
+			t.Errorf("mock agent: read task1: %v", err)
+			return
+		}
+		close(task1Read)
+		// Do NOT send a result for task1. Close immediately so the next write fails.
+	}()
+
+	go handleAgentSession(sess, opts)
+
+	// Wait for session ready.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		sess.mu.Lock()
+		ready := sess.IsAgent && sess.agentTaskCh != nil
+		sess.mu.Unlock()
+		if ready {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Send first task — server writes it successfully, agent reads it.
+	result1Ch := make(chan proto.Result, 1)
+	sess.agentTaskCh <- agentTaskReq{
+		task:     proto.Task{ID: "task1", Kind: proto.TaskExec, Command: "id"},
+		resultCh: result1Ch,
+	}
+
+	// Wait until the mock agent has read task1 and closed the connection.
+	select {
+	case <-task1Read:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for mock agent to read task1")
+	}
+	<-agentDone // agent has closed its end
+
+	// Send second task — the write will fail because the conn is closed.
+	// task1 is still in pending (no result was ever sent).
+	result2Ch := make(chan proto.Result, 1)
+	sess.agentTaskCh <- agentTaskReq{
+		task:     proto.Task{ID: "task2", Kind: proto.TaskExec, Command: "whoami"},
+		resultCh: result2Ch,
+	}
+
+	// task1 MUST receive an error result (either from the write-error cleanup
+	// or the disconnect cleanup). This is the key assertion — without the fix,
+	// task1 would be orphaned.
+	timeout := time.After(5 * time.Second)
+
+	select {
+	case r := <-result1Ch:
+		if r.Error == "" {
+			t.Error("task1: expected non-empty error after cleanup")
+		}
+	case <-timeout:
+		t.Fatal("task1: timed out waiting for error result (orphaned pending task)")
+	}
+
+	// task2 may or may not be picked up by the write loop (depends on
+	// select scheduling). If it was, verify it got an error too.
+	select {
+	case r := <-result2Ch:
+		if r.Error == "" {
+			t.Error("task2: expected non-empty error after write failure")
+		}
+	case <-time.After(500 * time.Millisecond):
+		// Write loop returned via <-done before picking up task2 — acceptable.
+	}
+}

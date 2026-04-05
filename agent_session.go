@@ -204,7 +204,18 @@ func handleAgentSession(sess *Session, opts sessionOpts) {
 			pending[req.task.ID] = req.resultCh
 			pendingMu.Unlock()
 			if err := proto.WriteMsgEncrypted(conn, cs, proto.MsgTask, req.task); err != nil {
-				req.resultCh <- proto.Result{TaskID: req.task.ID, Error: err.Error()}
+				// Write failed — resolve ALL pending tasks with an error,
+				// not just the one that triggered the failure.
+				errMsg := fmt.Sprintf("write failed: %v", err)
+				pendingMu.Lock()
+				for id, ch := range pending {
+					ch <- proto.Result{TaskID: id, Error: errMsg}
+					delete(pending, id)
+				}
+				pendingMu.Unlock()
+				opts.printer.Notify("[-] Agent %d write error: %v", sess.ID, err)
+				conn.Close()
+				opts.registry.Remove(sess.ID)
 				return
 			}
 		}
