@@ -329,7 +329,12 @@ func (c *Console) displayGroupedSessions(sessions []*Session, groupBy string) {
 			var user, osStr, cveStr string
 			suffix := ""
 
-			if s.Findings == nil {
+			if s.IsAgent && s.AgentMeta != nil {
+				user = s.AgentMeta.User
+				osStr = s.AgentMeta.OS + "/" + s.AgentMeta.Arch
+				cveStr = "-"
+				suffix = ansiGreen + "  [agent]" + ansiReset
+			} else if s.Findings == nil {
 				user = "..."
 				osStr = "..."
 				cveStr = "..."

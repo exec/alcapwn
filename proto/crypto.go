@@ -382,31 +382,20 @@ func newCryptoSession(sendKey, recvKey [32]byte) (*CryptoSession, error) {
 	return &CryptoSession{sendCipher: send, recvCipher: recv}, nil
 }
 
-// errNonceOverflow is returned when the 12-byte nonce is exhausted (all 0xFF).
-var errNonceOverflow = fmt.Errorf("crypto: nonce overflow — all 2^96 values exhausted")
-
 // errNonceLimit is returned when the 32-bit invocation counter (low 4 bytes)
 // reaches 2^32, per NIST SP 800-38D guidance for AES-GCM deterministic nonces.
+// This also covers the full 96-bit overflow case (all 0xFF), since bytes 8-11
+// being 0xFF is a subset of all 12 bytes being 0xFF.
 var errNonceLimit = fmt.Errorf("crypto: nonce limit reached — 2^32 invocations per NIST SP 800-38D")
 
 func incrementNonce(n *[12]byte) error {
 	// Check the NIST 2^32 practical limit BEFORE incrementing. The counter
 	// occupies bytes 8-11 (big-endian). If all four are 0xFF, the next
 	// value would be 0x100000000 which exceeds 2^32-1.
+	// This also catches the full 96-bit overflow (all bytes 0xFF), since
+	// that is a strict subset of the 32-bit limit condition.
 	if n[8] == 0xff && n[9] == 0xff && n[10] == 0xff && n[11] == 0xff {
 		return errNonceLimit
-	}
-
-	// Check for full 96-bit overflow: all bytes 0xFF.
-	allFF := true
-	for _, b := range n {
-		if b != 0xff {
-			allFF = false
-			break
-		}
-	}
-	if allFF {
-		return errNonceOverflow
 	}
 
 	for i := 11; i >= 0; i-- {
