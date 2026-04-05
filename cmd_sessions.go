@@ -165,22 +165,18 @@ func (c *Console) sortSessions(sessions []*Session, sortBy string) {
 			return sessions[i].StartTime.After(sessions[j].StartTime)
 		})
 	case "match_count":
-		sort.Slice(sessions, func(i, j int) bool {
-			c.persistMu.Lock()
-			defer c.persistMu.Unlock()
-			// Count profiles for each session from persistence store
-			iMatches, jMatches := 0, 0
-			for _, p := range c.persist.Profiles {
-				for _, sid := range p.Sessions {
-					if sid == sessions[i].ID {
-						iMatches++
-					}
-					if sid == sessions[j].ID {
-						jMatches++
-					}
-				}
+		// Pre-compute match counts outside the sort comparator to avoid
+		// acquiring persistMu on every comparison (O(N*logN) lock ops).
+		counts := make(map[int]int)
+		c.persistMu.Lock()
+		for _, p := range c.persist.Profiles {
+			for _, sid := range p.Sessions {
+				counts[sid]++
 			}
-			return iMatches > jMatches
+		}
+		c.persistMu.Unlock()
+		sort.Slice(sessions, func(i, j int) bool {
+			return counts[sessions[i].ID] > counts[sessions[j].ID]
 		})
 	case "id":
 		sort.Slice(sessions, func(i, j int) bool {
@@ -1204,19 +1200,6 @@ func (c *Console) cmdDownload(args []string) {
 	fmt.Printf("[*] Downloaded %s (%d bytes) to %s\n", remotePath, len(data), localPath)
 }
 
-// isBase64 checks if a string looks like base64 encoded data
-func isBase64(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	for _, r := range s {
-		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '+' || r == '/' || r == '=') {
-			return false
-		}
-	}
-	return true
-}
-
 // cmdUpload uploads a file from the local machine to the remote session.
 // Usage: upload <id> <local_path> [remote_path]
 func (c *Console) cmdUpload(args []string) {
@@ -2127,14 +2110,20 @@ func (c *Console) cmdBroadcast(args []string) {
 	sessions := c.registry.All()
 	count := 0
 	skipped := 0
+	agentSkipped := 0
 	for _, s := range sessions {
 		s.mu.Lock()
 		state := s.State
+		isAgent := s.IsAgent
 		conn := s.ActiveConn
 		if conn == nil {
 			conn = s.Conn
 		}
 		s.mu.Unlock()
+		if isAgent {
+			agentSkipped++
+			continue
+		}
 		if state == SessionStateInteractive {
 			skipped++
 			continue
@@ -2144,8 +2133,8 @@ func (c *Console) cmdBroadcast(args []string) {
 			count++
 		}
 	}
-	if skipped > 0 {
-		fmt.Printf("[*] Broadcast to %d session(s) (%d interactive skipped).\n", count, skipped)
+	if skipped > 0 || agentSkipped > 0 {
+		fmt.Printf("[*] Broadcast to %d session(s) (%d interactive skipped, %d agent skipped).\n", count, skipped, agentSkipped)
 	} else {
 		fmt.Printf("[*] Broadcast to %d session(s).\n", count)
 	}
@@ -2311,8 +2300,8 @@ func (c *Console) cmdTLSUpgrade(args []string) {
 
 		// Verify TLS ClientHello and complete handshake.
 		buf := make([]byte, 1)
-		rawConn.Read(buf) //nolint:errcheck
-		if buf[0] != 0x16 {
+		n, readErr := rawConn.Read(buf)
+		if readErr != nil || n == 0 || buf[0] != 0x16 {
 			rawConn.Close()
 			if verbosity >= 1 {
 				c.printer.Notify("[!] Session %d TLS upgrade failed — unexpected byte 0x%02x (expected TLS ClientHello 0x16).", id, buf[0])

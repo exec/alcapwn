@@ -44,6 +44,9 @@ func (c *Console) cmdListen(args []string) {
 					i++
 					downloadDir = rest[i]
 				}
+			default:
+				fmt.Printf("[!] Unknown flag: %s\n", rest[i])
+				return
 			}
 		}
 		if err := c.StartHTTPListener(addr, registerPath, beaconPath, downloadDir); err != nil {
