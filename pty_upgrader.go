@@ -177,8 +177,11 @@ func (s *ANSIState) Parse(data []byte) []byte {
 		}
 	}
 
-	// Return the buffer (may contain trailing partial escape sequence)
-	result := s.buf
+	// Return a copy of the buffer. The previous code returned a slice aliasing
+	// s.buf's backing array, so the next Parse call would silently overwrite
+	// the caller's data.
+	result := make([]byte, len(s.buf))
+	copy(result, s.buf)
 	s.buf = s.buf[:0]
 	return result
 }
